@@ -5,6 +5,7 @@
   "publishConfig": {"access":"public"},
   "repository": {"type":"git","url":"git+https://github.com/paranoidPhantom/dsh-telegram-remote.git"},
   "type": "module",
+  "license": "MIT",
   "description": "Telegram Remote — owner-only remote control of DSH sessions through Telegram.",
   "exports": {".": "./index.js", "./client": "./client.js", "./locale/*.json": "./locale/*.json", "./icon": "./telegram-logo.svg"},
   "files": ["*.js", "cordis.patch.yml", "locale/*.json", "telegram-logo.svg", "README*.md", "WIDGETS.md", "THIRD_PARTY_NOTICES.md"],
