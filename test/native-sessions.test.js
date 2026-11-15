@@ -15,7 +15,7 @@ function fixture(t) {
     async list() { return []; }
   };
   const api = { async call(method, params) { calls.push({ method, params }); return method === 'sendMessage' ? { message_id: ++n } : method === 'createForumTopic' ? { message_thread_id: 500 } : true; } };
-  const c = new TelegramConsole({ api, bridge, store: { async get(k) { return data.get(k); }, async set(k,v) { data.set(k,structuredClone(v)); }, async entries() { return [...data]; } } });
+  const c = new TelegramConsole({ api, bridge, ownerId:OWNER, store: { async get(k) { return data.get(k); }, async set(k,v) { data.set(k,structuredClone(v)); }, async entries() { return [...data]; } } });
   c.username = 'Bot'; t.after(() => c.close());
   const msg = (text, thread = 0, id = ++n) => ({ message: { from: { id: OWNER }, chat: { id: OWNER, type: 'private' }, message_id: id, message_thread_id: thread, text } });
   const cb = (token, thread = 0, owner = OWNER, messageId = 1) => ({ callback_query: { id: String(++n), from: { id: owner }, data: token, message: { chat: { id: OWNER, type: 'private' }, message_thread_id: thread, message_id: messageId } } });

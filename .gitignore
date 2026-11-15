@@ -6,4 +6,5 @@ node_modules/
 .env.*
 *.tgz
 test-results.txt
+pack-result.json
 .DS_Store

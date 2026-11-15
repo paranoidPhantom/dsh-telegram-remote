@@ -20,11 +20,8 @@ export class ConsolePicker {
     page = Math.min(Math.max(0, page), Math.max(0, Math.ceil(sessions.length / PAGE) - 1));
     const rows = [];
     for (const session of sessions.slice(page * PAGE, (page + 1) * PAGE)) {
-      let mapping = await this.console.mapping(session.id);
       const text = `${session.running ? '▶ ' : ''}${session.title || session.id}${label(session.model) ? ` · ${label(session.model)}` : ''}`;
-      rows.push([this.console.username && mapping && !mapping.deleted
-        ? { text: cut(text, 60), url: `https://t.me/${this.console.username.replace(/^@/, '')}/${mapping.threadId}` }
-        : this.console.button(text, ctx, { type: 'open', id: session.id })]);
+      rows.push([this.console.button(text, ctx, { type: 'open', id: session.id })]);
     }
     rows.push([this.console.button('New session', ctx, {type:'new'})]);
     rows.push(...this.console.navigation(ctx, page, sessions.length, { type: 'sessions' }));

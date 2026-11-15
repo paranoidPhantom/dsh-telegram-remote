@@ -32,7 +32,7 @@ function fixture() {
     async document(args) { calls.push({ method: 'document', params: args }); }
   };
   const controller = new AbortController();
-  const console = new TelegramConsole({ api, bridge, store: { async get(k) { return data.get(k); }, async set(k, v) { data.set(k, structuredClone(v)); }, async entries() { return [...data]; } }, signal: controller.signal });
+  const console = new TelegramConsole({ api, bridge, ownerId:OWNER, store: { async get(k) { return data.get(k); }, async set(k, v) { data.set(k, structuredClone(v)); }, async entries() { return [...data]; } }, signal: controller.signal });
   const message = (text, thread = 0, id = ++messageId, owner = OWNER) => ({ message: { message_id: id, from: { id: owner }, chat: { id: OWNER, type: 'private' }, ...(thread ? { message_thread_id: thread } : {}), text } });
   const callback = (token, thread = 0, owner = OWNER, chatId = OWNER, id = 999) => ({ callback_query: { id: `q${messageId++}`, from: { id: owner }, data: token, message: { message_id: id, chat: { id: chatId, type: 'private' }, ...(thread ? { message_thread_id: thread } : {}) } } });
   const lastSend = () => calls.filter(c => c.method === 'sendMessage').at(-1);
@@ -297,6 +297,7 @@ test('session listing creates no topics and opening creates only the tapped topi
   assert.ok(f.calls.filter(c=>c.method==='editMessageText').at(-1).params.reply_markup.inline_keyboard[0][0].url);
   await f.console.handleUpdate(f.message('/sessions'));
   assert.equal(f.calls.filter(c => c.method === 'createForumTopic').length, 1);
+  assert.ok(f.lastSend().params.reply_markup.inline_keyboard.slice(0,8).every(row=>row[0].callback_data&&!row[0].url));
   assert.ok(!f.calls.some(c => c.method === 'sendMessage' && /^Open:/.test(c.params.text)));
 });
 

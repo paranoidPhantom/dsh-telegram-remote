@@ -13,7 +13,7 @@ import { TOPIC_MODE_HELP, topicModeError } from './topic-mode.js';
  * Approval outcomes are returned to the caller; this class never calls resolveApproval.
  */
 export class TelegramConsole {
-  constructor({ api, bridge, store, ownerId = 5491328220, signal }) {
+  constructor({ api, bridge, store, ownerId = 0, signal }) {
     this.picker = new ConsolePicker(this);
     this.sessionActions = new ConsoleSessions(this);
     this.delivery = new RunDelivery(this);

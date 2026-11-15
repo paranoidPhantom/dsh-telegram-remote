@@ -6,7 +6,11 @@ export function createSettingsController({credentials,credentialKey,store,getAdm
       if(!Number.isSafeInteger(admin)||admin<=0)throw Error('Admin user ID must be a positive integer.');
       const token=input.botToken;
       if(token!==undefined&&token!==''&&(typeof token!=='string'||!/^\d+:[A-Za-z0-9_-]{20,}$/.test(token.trim())))throw Error('Enter a valid Telegram bot token.');
-      if(token?.trim())await credentials.modifyRecord(credentialKey,async()=>({kind:'api-key',key:token.trim()}));
+      if(token?.trim()){
+        await credentials.modifyRecord(credentialKey,async()=>({kind:'api-key',key:token.trim()}));
+        const saved=await credentials.readRecord(credentialKey);
+        if(saved?.kind!=='api-key'||saved.key!==token.trim())throw Error('The credentials store did not confirm the token write.');
+      }
       if(admin!==getAdmin()){
         for(const [key,value] of await store.entries())if(key.startsWith('console:topic:'))await store.set(key,{...value,deleted:true,closed:true});
       }
@@ -18,6 +22,8 @@ export function createSettingsController({credentials,credentialKey,store,getAdm
 }
 export function registerSettingsRoute(ctx,controller){
   return ctx.effect(()=>ctx.webServer.register({kind:'exact',path:'/telegram-console/settings',handler:async(req,res)=>{
+    const rejection=ctx.connection.requestRejection({headers:req.headers});
+    if(rejection){res.writeHead(rejection,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'Harness rejected this settings request.'}));return;}
     const admission=ctx.connection.admit({headers:req.headers});
     if('rejection' in admission||admission.peer.principal.kind!=='owner'){res.writeHead(403);res.end();return;}
     const origin=ctx.webServer.getOrigin();
@@ -32,7 +38,6 @@ export function registerSettingsRoute(ctx,controller){
     try{
       if(request.method==='GET')return reply(await controller.read());
       if(request.method!=='POST')return reply({error:'Method not allowed'},405);
-      if(request.headers.get('origin')!==new URL(request.url).origin)return reply({error:'Origin rejected'},403);
       if(!request.headers.get('content-type')?.startsWith('application/json'))return reply({error:'JSON required'},415);
       const body=await request.text();if(body.length>4096)return reply({error:'Request too large'},413);
       return reply(await controller.save(JSON.parse(body)));

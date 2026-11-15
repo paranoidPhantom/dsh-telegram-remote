@@ -14,7 +14,7 @@ import { registerSendFile } from './send-file.js';
 export const inject=['tools','webServer','connection','credentials','sessionController','sessionQuery','sessionProjections','storageDomain','workingDirectory','agents','fs','attachments','systemPrompt'];
 const packageDir=fileURLToPath(new URL('.',import.meta.url));
 export async function apply(ctx, config) {
-  const bootstrap=config.bootstrapPath??resolve(packageDir,'..','.telegram-console-bootstrap');
+  const bootstrap=config.bootstrapPath;
   const statusPath=config.statusPath??resolve(packageDir,'.runtime-status.json');
   const {version}=JSON.parse(await readFile(new URL('./package.json',import.meta.url),'utf8'));
   const startedAt=new Date().toISOString();
@@ -25,9 +25,9 @@ export async function apply(ctx, config) {
   const launch=promise=>lifecycle.launch(promise);
   lifecycle.own(()=>{for(const timer of timers.values())clearTimeout(timer);timers.clear();});
   ctx.effect(()=>async()=>{await lifecycle.close();await status({state:'stopped',stoppedAt:new Date().toISOString()});});
-  if(!Number.isSafeInteger(config.ownerId)||config.ownerId<=0)throw Error('A numeric Telegram ownerId is required');
+  if(!Number.isSafeInteger(config.ownerId)||config.ownerId<0)throw Error('Telegram ownerId must be a non-negative integer; zero disables access until configured.');
   // One-time secret handoff, outside distributable package. No token in bundle config.
-  try {
+  if(bootstrap)try {
     const token=(await readFile(bootstrap,'utf8')).trim();
     if(!/^\d+:[A-Za-z0-9_-]+$/.test(token))throw Error('Malformed bootstrap token');
     await chmod(bootstrap,0o600);
@@ -90,6 +90,11 @@ export async function apply(ctx, config) {
   launch((async()=>{
     while(!signal.aborted){
       try {
+        if(!adminUserId||!(await ctx.credentials.describeRecord(config.credentialKey)).configured){
+          await status({state:'unconfigured'});
+          await new Promise(resolve=>{const timer=setTimeout(done,1000);function done(){clearTimeout(timer);signal.removeEventListener('abort',done);resolve();}signal.addEventListener('abort',done,{once:true});});
+          continue;
+        }
         const me=await api.call('getMe');surface.username=me.username;
         const webhook=await api.call('getWebhookInfo');if(webhook.url){await status({state:'offline',lastError:'Bot has an active webhook; remove it explicitly before starting console polling'});return;}
         lastError=null;
