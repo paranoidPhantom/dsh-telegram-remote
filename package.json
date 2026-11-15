@@ -1,6 +1,6 @@
 {
   "name": "dsh-telegram-remote",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "icon": "./telegram-logo.svg",
   "publishConfig": {"access":"public"},
   "repository": {"type":"git","url":"git+https://github.com/paranoidPhantom/dsh-telegram-remote.git"},
