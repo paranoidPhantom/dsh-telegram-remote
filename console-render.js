@@ -1,4 +1,6 @@
 import { relativePathText } from './path-display.js';
+import { createTranslator } from './bot-i18n.js';
+const english=createTranslator(()=> 'en');
 /** Pure Telegram text formatting and protocol error classification. */
 export const TTL = 15 * 60_000;
 export const PAGE = 8;
@@ -32,16 +34,16 @@ export const notModified = error => /not modified/i.test(error?.message || Strin
 export const gone = error => error?.status === 404 || error?.statusCode === 404 || /session.*(?:not found|deleted)|unknown session/i.test(error?.message || '');
 
 
-export function compactSession(id, metadata, active = false) {
+export function compactSession(id, metadata, active = false, t=english) {
   if (!metadata) return '⚠ Session gone in DSH. Use /new or /sessions.';
   const model = label(metadata.model), current = label(metadata.activeModel), context = percent(metadata.context);
-  return [metadata.title || id, model && `Model: ${model}`, current && current !== model && `Active: ${current}`,
-    metadata.running || active ? '▶ Working' : 'Idle', context && `Context: ${context}`].filter(Boolean).join('\n');
+  return [metadata.title || id, model && `${t('model')}: ${model}`, current && current !== model && `${t('activeModel')}: ${current}`,
+    metadata.running || active ? `▶ ${t('working')}` : t('idle'), context && `${t('context')}: ${context}`].filter(Boolean).join('\n');
 }
 
 /** Escape before measuring: every returned HTML message stays under Telegram's
  * limit even when tool output consists entirely of reserved HTML characters. */
-export function toolLogPages(entries = [], final = false, cwd) {
+export function toolLogPages(entries = [], final = false, cwd, t=english) {
   if (!entries.length) return [];
   const icons = { running: '▶', completed: '✓', failed: '✗', cancelled: '⏹' };
   const preview = (value, limit) => {
@@ -56,7 +58,7 @@ export function toolLogPages(entries = [], final = false, cwd) {
     // Read/search/command payloads are deliberately absent from the chat log.
     const detail = isChange && tool.resultHtml && /Changes|diff|Replace|With/.test(tool.resultHtml)
       ? `\n${tool.resultHtml}` : '';
-    return `${index + 1}. ${icons[status] || '•'} ${preview(tool.name || 'Tool', 70)} · ${html(status)}${summary}${detail}`;
+    return `${index + 1}. ${icons[status] || '•'} ${preview(tool.name || 'Tool', 70)} · ${html(t(status))}${summary}${detail}`;
   });
   const pages = []; let page = '';
   for (const row of rows) {
@@ -64,5 +66,5 @@ export function toolLogPages(entries = [], final = false, cwd) {
     page += `${page ? '\n' : ''}${row}`;
   }
   if (page) pages.push(page);
-  return pages.map((body, index) => `<blockquote expandable>Tools · ${final ? 'finished' : 'working'}${pages.length > 1 ? ` · ${index + 1}/${pages.length}` : ''}\n${body}</blockquote>`);
+  return pages.map((body, index) => `<blockquote expandable>${html(t('tools'))} · ${html(t(final ? 'finished' : 'working'))}${pages.length > 1 ? ` · ${index + 1}/${pages.length}` : ''}\n${body}</blockquote>`);
 }

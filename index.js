@@ -10,6 +10,7 @@ import { createStreamScheduler } from './stream-scheduler.js';
 import { RuntimeLifecycle } from './runtime-lifecycle.js';
 import { createSettingsController, registerSettingsRoute } from './settings-host.js';
 import { registerSendFile } from './send-file.js';
+import { dshLocale } from './dsh-locale.js';
 
 export const inject=['tools','webServer','connection','credentials','sessionController','sessionQuery','sessionProjections','storageDomain','workingDirectory','agents','fs','attachments','systemPrompt'];
 const packageDir=fileURLToPath(new URL('.',import.meta.url));
@@ -42,8 +43,8 @@ export async function apply(ctx, config) {
   adminUserId=(await store.get('settings:adminUserId'))??config.ownerId;
   const api=new TelegramAdapter({credentials:ctx.credentials,credentialKey:config.credentialKey,signal});
   const bridge=await createBridge(ctx,signal);ctx.effect(()=>()=>bridge.dispose());
-  const surface=new TelegramConsole({api,bridge,store,ownerId:adminUserId,signal});
-  const settings=createSettingsController({credentials:ctx.credentials,credentialKey:config.credentialKey,store,getAdmin:()=>adminUserId,setAdmin:value=>{adminUserId=value;surface.ownerId=value;surface.actions.clear();surface.active.clear();}});
+  const surface=new TelegramConsole({api,bridge,store,ownerId:adminUserId,signal,getLocale:()=>dshLocale(ctx)});
+  const settings=createSettingsController({credentials:ctx.credentials,credentialKey:config.credentialKey,store,getLocale:()=>dshLocale(ctx),getAdmin:()=>adminUserId,setAdmin:value=>{adminUserId=value;surface.ownerId=value;surface.actions.clear();surface.active.clear();}});
   registerSettingsRoute(ctx,settings);
   surface.runtimeVersion=version;surface.runtimePid=process.pid;
   registerSendFile(ctx,{api,surface});

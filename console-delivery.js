@@ -36,7 +36,7 @@ export class RunDelivery {
   async log(mapping, delivery, view, key) {
     const start=delivery.logStart||0;
     const end=view.logEnd??(view.final||draftText(view)?(view.toolLog||[]).length:Math.max(start,(view.toolLog||[]).length-1));
-    const pages = toolLogPages((view.toolLog||[]).slice(start,end), view.final, view.cwd);
+    const pages = toolLogPages((view.toolLog||[]).slice(start,end), view.final, view.cwd, this.console.t);
     if (!pages.length) return;
     delivery.logMessageIds ||= !delivery.logStart && delivery.messageId && !delivery.answerPreview ? [delivery.messageId] : [];
     const current = await this.console.mapping(delivery.id);
@@ -84,7 +84,7 @@ export class RunDelivery {
     const latestTool=!draftText(view)&&(view.toolLog||[]).length>(delivery.logStart||0)?view.toolLog.at(-1):null;
     const summary=latestTool?relativePathText(latestTool.summary||'',view.cwd):'';
     const prefix=latestTool?`🔧 ${latestTool.name}`:'';
-    const previewText=latestTool?`${prefix}${summary?` — ${summary}`:''}`:draftText(view)||'Deep diving';
+    const previewText=latestTool?`${prefix}${summary?` — ${summary}`:''}`:draftText(view)||this.console.t('deepDiving');
     const formatted=latestTool?{text:previewText.slice(0,4096),entities:summary?[{type:'code',offset:prefix.length+3,length:Math.min(summary.length,4096-prefix.length-3)}]:[]}:answerParts(previewText)[0];
     if(latestTool)formatted.entities.unshift({type:'custom_emoji',offset:0,length:2,custom_emoji_id:'5220046725493828505'});
     if (!this.console.draftsUnsupported) {
@@ -98,12 +98,12 @@ export class RunDelivery {
     await this.console.api.call('sendChatAction', { ...this.console.params(mapping), action: 'typing' });
     if (delivery.logMessageIds?.includes(delivery.messageId)) {
       // This fallback is answer-only and must not steal/clear log Stop controls.
-      const sent = await this.console.api.call('sendMessage', { ...this.console.params(mapping), text: 'Deep diving', disable_notification: true });
+      const sent = await this.console.api.call('sendMessage', { ...this.console.params(mapping), text: this.console.t('deepDiving'), disable_notification: true });
       delivery.messageId = sent.message_id;
       delivery.answerPreview = true;
     }
     const current = await this.console.mapping(delivery.id);
-    const text = chunks(draftText(view) || 'Deep diving')[0];
+    const text = chunks(draftText(view) || this.console.t('deepDiving'))[0];
     const controls = current?.latestControlMessageId === delivery.messageId;
     const key = this.pageKey(mapping, delivery.messageId);
     const signature = this.frame(text, [controls, controls && this.console.draftsUnsupported]);
@@ -220,7 +220,7 @@ export class RunDelivery {
         if (!view.final) {
           this.console.active.set(id, { view, draftId: delivery.draftId });
           if (!delivery.messageId) {
-            const sent = await this.console.api.call('sendMessage', { ...this.console.params(mapping), text: 'Deep diving', disable_notification: true, reply_markup: this.console.controls(id, mapping, true) });
+            const sent = await this.console.api.call('sendMessage', { ...this.console.params(mapping), text: this.console.t('deepDiving'), disable_notification: true, reply_markup: this.console.controls(id, mapping, true) });
             delivery.messageId = sent.message_id;
             await this.console.store.set(key, delivery);
             await this.cosmetic(() => this.console.latest(mapping, sent.message_id));
@@ -252,7 +252,7 @@ export class RunDelivery {
         }
         // Persist each sent chunk before proceeding: retries never resend an
         // already delivered answer prefix, and failure never deletes the preview.
-        const parts = answerParts(view.answer || (/fail|error/i.test(view.status || '') ? 'Unable to complete the request.' : /stop|cancel/i.test(view.status || '') ? 'Stopped.' : 'No answer returned.'));
+        const parts = answerParts(view.answer || (/fail|error/i.test(view.status || '') ? this.console.t('unableComplete') : /stop|cancel/i.test(view.status || '') ? this.console.t('stopped') : this.console.t('noAnswer')));
         delivery.finalMessageIds ||= [];
         this.console.active.delete(id);
 

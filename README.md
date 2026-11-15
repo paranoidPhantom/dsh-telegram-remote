@@ -1,5 +1,7 @@
 # Telegram Remote
 
+[English](README.md) · [简体中文](README.zh-CN.md) · [Русский](README.ru.md)
+
 Control DeepSeek Harness from a private Telegram bot, built around **Telegram threads and modern native messaging features**.
 
 - **Threads by design:** each DSH session has its own private-chat topic. Open existing sessions on demand or start one with Telegram’s native **New Topic** action.

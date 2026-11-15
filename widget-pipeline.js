@@ -19,8 +19,8 @@ export function createWidgetPipeline({ctx,api,store,surface,signal}) {
       await delivery.deliver({chatId:topic.chatId,threadId:topic.threadId,filename,compiled});
       if(compiled.warnings.length)await api.call('sendMessage',{chat_id:topic.chatId,message_thread_id:topic.threadId,text:`🖼 ${filename}: ${compiled.warnings.join('; ')}`.slice(0,4096),disable_notification:true});
     }catch(error){
-      await api.call('sendMessage',{chat_id:topic.chatId,message_thread_id:topic.threadId,text:`⚠ Widget not delivered: ${String(error.message).slice(0,1000)}`});
-      await api.document({chatId:topic.chatId,threadId:topic.threadId,name:filename,content:raw,caption:'Original widget source'});
+      await api.call('sendMessage',{chat_id:topic.chatId,message_thread_id:topic.threadId,text:`⚠ ${surface.t('widgetNotDelivered')}: ${String(error.message).slice(0,1000)}`});
+      await api.document({chatId:topic.chatId,threadId:topic.threadId,name:filename,content:raw,caption:surface.t('originalWidgetSource')});
     }
   };
 }

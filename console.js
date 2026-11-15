@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { createTranslator } from './bot-i18n.js';
 
 import { TTL, str, cut, html, chunks, compactSession, missingTopic, missingMessage, notModified, gone } from './console-render.js';
 import { ConsolePicker } from './console-picker.js';
@@ -6,14 +7,15 @@ import { ConsoleSessions } from './console-sessions.js';
 import { RunDelivery } from './console-delivery.js';
 import { formatApproval } from './tool-format.js';
 import { fileButtonName } from './path-display.js';
-import { TOPIC_MODE_HELP, topicModeError } from './topic-mode.js';
+import { topicModeError } from './topic-mode.js';
 
 /** Telegram-only delivery projection. No DSH session/model state is persisted.
  * Parent owns polling offsets and calls refresh/onRun for live bridge events.
  * Approval outcomes are returned to the caller; this class never calls resolveApproval.
  */
 export class TelegramConsole {
-  constructor({ api, bridge, store, ownerId = 0, signal }) {
+  constructor({ api, bridge, store, ownerId = 0, signal, getLocale = () => 'en' }) {
+    this.translate = createTranslator(getLocale);
     this.picker = new ConsolePicker(this);
     this.sessionActions = new ConsoleSessions(this);
     this.delivery = new RunDelivery(this);
@@ -42,6 +44,8 @@ export class TelegramConsole {
     };
     signal?.addEventListener('abort', this.abort, { once: true });
   }
+
+  get t() { return this.translate; }
 
   close() {
     this.abort();
@@ -91,7 +95,7 @@ export class TelegramConsole {
     for (const [key, value] of this.actions) if (value.expires < now) this.actions.delete(key);
     const token = randomBytes(12).toString('base64url');
     this.actions.set(token, { ...action, chatId: ctx.chatId, threadId: ctx.threadId || 0, expires: now + TTL });
-    const appearance = text === 'Model' ? {style:'primary',icon_custom_emoji_id:'5258466217273871977'}
+    const appearance = action.type === 'providers' && !action.picker ? {style:'primary',icon_custom_emoji_id:'5258466217273871977'}
       : action.type === 'details' ? {icon_custom_emoji_id:'5454371323595744068'}
       : action.type === 'close' ? {style:'danger',icon_custom_emoji_id:'5341570033405412393'}
       : action.type === 'steer' ? {icon_custom_emoji_id:'5220197908342648622'}
@@ -99,8 +103,8 @@ export class TelegramConsole {
     return { text: cut(text, 60), callback_data: token, ...appearance };
   }
   controls(id, ctx, running = this.active.has(id)) {
-    return { inline_keyboard: [[...(running && this.draftsUnsupported ? [this.button('⏹ Stop', ctx, { type: 'stop', id })] : []),
-      this.button('Model', ctx, { type: 'providers', id, page: 0 }), this.button('Details', ctx, { type: 'details', id }), this.button('End topic', ctx, { type: 'close', id })]] };
+    return { inline_keyboard: [[...(running && this.draftsUnsupported ? [this.button(this.t('stop'), ctx, { type: 'stop', id })] : []),
+      this.button(this.t('model'), ctx, { type: 'providers', id, page: 0 }), this.button(this.t('details'), ctx, { type: 'details', id }), this.button(this.t('endTopic'), ctx, { type: 'close', id })]] };
   }
   finalControls(id,ctx,view){
     const markup=this.controls(id,ctx,false);
@@ -125,7 +129,7 @@ export class TelegramConsole {
     return mapping;
   }
   compact(id, metadata) {
-    return compactSession(id, metadata, this.active.has(id));
+    return compactSession(id, metadata, this.active.has(id), this.t);
   }
   async card(id, mapping, metadata) {
     const text = this.compact(id, metadata);
@@ -149,7 +153,7 @@ export class TelegramConsole {
   }
   async details(id, ctx) {
     const metadata = await this.bridge.metadata(id);
-    const diagnostics = [metadata?.cwd && `Directory: ${metadata.cwd}`, await this.bridge.details(id)].filter(Boolean).join('\n\n');
+    const diagnostics = [metadata?.cwd && this.t('directoryPath', { path: metadata.cwd }), await this.bridge.details(id)].filter(Boolean).join('\n\n');
     for (const part of chunks(diagnostics, 3000)) {
       const sent = await this.send(ctx, `<blockquote expandable>${html(part)}</blockquote>`, { parse_mode: 'HTML', reply_markup: this.controls(id, ctx) });
       await this.latest(ctx, sent.message_id);
@@ -164,13 +168,13 @@ export class TelegramConsole {
       try { metadata = await this.bridge.metadata(id); }
       catch (e) {
         if (!gone(e)) {
-          if (mapping.cardId) await this.edit(mapping, mapping.cardId, '⚠ DSH offline. /status to retry.', !mapping.latestControlMessageId || mapping.latestControlMessageId === mapping.cardId ? this.controls(id, mapping) : { inline_keyboard: [] });
+          if (mapping.cardId) await this.edit(mapping, mapping.cardId, this.t('offline'), !mapping.latestControlMessageId || mapping.latestControlMessageId === mapping.cardId ? this.controls(id, mapping) : { inline_keyboard: [] });
           return;
         }
       }
       try {
         if (!metadata) {
-          await this.api.call('editForumTopic', { chat_id: mapping.chatId, message_thread_id: mapping.threadId, name: '⚠ Session gone' });
+          await this.api.call('editForumTopic', { chat_id: mapping.chatId, message_thread_id: mapping.threadId, name: this.t('sessionGoneTitle') });
           await this.card(id, mapping, null);
           return;
         }
@@ -192,7 +196,7 @@ export class TelegramConsole {
   async open(id, ctx) {
     return this.serial(id, async () => {
       const metadata = await this.bridge.metadata(id);
-      if (!metadata) return this.send(ctx, 'Session gone in DSH. Use /sessions.');
+      if (!metadata) return this.send(ctx, this.t('sessionGoneSessions'));
       let mapping = await this.mapping(id);
       const title = cut(metadata.title || id, 128);
       if (mapping && !mapping.deleted) {
@@ -228,17 +232,17 @@ export class TelegramConsole {
     const action = this.actions.get(query.data);
     const authorized = Number(query.from?.id) === this.ownerId && message?.chat?.type === 'private' && Number(ctx?.chatId) === this.ownerId;
     if (!authorized || (action && (Number(action.chatId) !== Number(ctx.chatId) || Number(action.threadId) !== Number(ctx.threadId)))) {
-      await this.api.call('answerCallbackQuery', { callback_query_id: query.id, text: 'Not authorized.', show_alert: true });
+      await this.api.call('answerCallbackQuery', { callback_query_id: query.id, text: this.t('unauthorized'), show_alert: true });
       return;
     }
     if (!action || action.expires <= Date.now()) {
       if (action) this.actions.delete(query.data);
       if (action?.type === 'new-confirm' || action?.type === 'new-cancel') {
         action.pending.expires = 0;
-        await this.api.call('answerCallbackQuery', { callback_query_id: query.id, text: 'Confirmation expired. Send another message here or use /new to confirm again.' });
-        return this.edit(ctx, message.message_id, 'Confirmation expired. No DSH session was created. Queued topic messages are retained in memory; send another message here to confirm again.', { inline_keyboard: [] });
+        await this.api.call('answerCallbackQuery', { callback_query_id: query.id, text: this.t('confirmationExpiredAlert') });
+        return this.edit(ctx, message.message_id, this.t('confirmationExpired'), { inline_keyboard: [] });
       }
-      await this.api.call('answerCallbackQuery', { callback_query_id: query.id, text: 'Controls expired. Refreshed; choose again.' });
+      await this.api.call('answerCallbackQuery', { callback_query_id: query.id, text: this.t('controlsExpired') });
       const bound = await this.bound(ctx.chatId, ctx.threadId);
       if (bound) await this.providers(bound.id, ctx, 0, message.message_id === bound.cardId ? undefined : message.message_id);
       else await this.sessions(ctx, 0, message.message_id);
@@ -251,7 +255,7 @@ export class TelegramConsole {
       case 'new-cancel': return this.sessionActions.confirm(action.pending, ctx, message.message_id, true);
       case 'close': return this.sessionActions.requestClose(action.id, ctx);
       case 'close-confirm': return this.sessionActions.confirmClose(action);
-      case 'close-cancel': return this.edit(ctx, message.message_id, 'Topic kept. DSH session unchanged.', this.controls(action.id, ctx));
+      case 'close-cancel': return this.edit(ctx, message.message_id, this.t('topicKept'), this.controls(action.id, ctx));
       case 'turn-file': {
         const file=await this.bridge.fileForTurn(action.id,action.turn,action.path);
         return this.api.document({chatId:ctx.chatId,threadId:ctx.threadId,name:file.name,content:file.content,caption:file.name});
@@ -259,12 +263,12 @@ export class TelegramConsole {
       case 'steer': {
         this.actions.delete(query.data);
         const result=await this.bridge.steerQueued(action.id,action.requestId);
-        return this.edit(ctx,message.message_id,result.accepted?'Steering now.':result.reason||'This message is no longer queued.',{inline_keyboard:[]});
+        return this.edit(ctx,message.message_id,result.accepted?this.t('steeringNow'):result.reason||this.t('noLongerQueued'),{inline_keyboard:[]});
       }
       case 'sessions': return this.sessions(ctx, action.page, message.message_id);
       case 'open': {
         const mapping=await this.open(action.id,ctx);
-        if(mapping&&this.username)return this.edit(ctx,message.message_id,'Session topic ready.',{inline_keyboard:[[{text:'Open topic',url:`https://t.me/${this.username.replace(/^@/,'')}/${mapping.threadId}`}]]});
+        if(mapping&&this.username)return this.edit(ctx,message.message_id,this.t('topicReady'),{inline_keyboard:[[{text:this.t('openTopic'),url:`https://t.me/${this.username.replace(/^@/,'')}/${mapping.threadId}`}]]});
         return;
       }
       case 'refresh': return this.status(action.id, ctx);
@@ -289,7 +293,7 @@ export class TelegramConsole {
         if (action.type === 'approve') return pending.finish('allowed-once');
         // Reject immediately; an optional reason cannot strand a DSH approval.
         pending.finish('rejected');
-        const reply = await this.send(ctx, 'Denied. Optional reason? Reply with one line.', { reply_markup: { force_reply: true, selective: true } });
+        const reply = await this.send(ctx, this.t('deniedReason'), { reply_markup: { force_reply: true, selective: true } });
         this.reasons.set(`${ctx.chatId}:${ctx.threadId}:${reply.message_id}`, { expires: Date.now() + TTL, req: pending.req });
         return;
       }
@@ -301,7 +305,7 @@ export class TelegramConsole {
 
   async requireTopics(ctx) {
     const me=await this.api.call('getMe');
-    if(me?.has_topics_enabled===false){await this.send(ctx,TOPIC_MODE_HELP);return false;}
+    if(me?.has_topics_enabled===false){await this.send(ctx,this.t('topicModeHelp'));return false;}
     return true;
   }
   async handleUpdate(update) {
@@ -310,7 +314,7 @@ export class TelegramConsole {
       try { return await this.callback(update.callback_query); }
       catch (e) {
         const m = update.callback_query.message;
-        if (Number(update.callback_query.from?.id) === this.ownerId && Number(m?.chat?.id) === this.ownerId) return this.send(this.context(m), `⚠ ${topicModeError(e)?TOPIC_MODE_HELP:cut(e.message, 500)}`, { disable_notification: false });
+        if (Number(update.callback_query.from?.id) === this.ownerId && Number(m?.chat?.id) === this.ownerId) return this.send(this.context(m), this.t('warning', { error: topicModeError(e) ? this.t('topicModeHelp') : cut(e.message, 500) }), { disable_notification: false });
         return;
       }
     }
@@ -349,30 +353,30 @@ export class TelegramConsole {
         this.reasons.delete(reasonKey);
         if (reason.expires > Date.now()) {
           if (typeof reason.req.onReason === 'function') await reason.req.onReason(cut(text, 1000));
-          else await this.send(ctx, 'Reason noted in Telegram only; DSH approval API accepts outcomes, not denial reasons.');
+          else await this.send(ctx, this.t('reasonNoted'));
         }
         return;
       }
       const command = text.match(/^\/(\w+)(?:@\w+)?(?:\s|$)/)?.[1]?.toLowerCase();
-      if (command === 'version') return await this.send(ctx, `Telegram Remote ${this.runtimeVersion || 'unknown'} · host ${this.runtimePid || 'unknown'}`);
+      if (command === 'version') return await this.send(ctx, this.t('version', { version: this.runtimeVersion || this.t('unknown'), pid: this.runtimePid || this.t('unknown') }));
       if (command === 'sessions' || command === 'start') {if(!await this.requireTopics(ctx))return;return await this.sessions(ctx);}
       if (command === 'new') return await this.requestNew(ctx);
-      if (command === 'help') return await this.send(ctx, '/sessions — open a live DSH session\n/new — create session\n/status — fresh compact status\n/stop — stop this session\n/files — deliver artifacts\n/help\nSend prompts inside a bound session topic. Model selection is in the pinned card. Approvals support Allow once or Deny, never Always allow.');
+      if (command === 'help') return await this.send(ctx, this.t('help'));
       if (!bound && ctx.threadId && !command) { await this.bindNativeTopic(ctx, { text, requestId }); return; }
-      if (!bound) return await this.send(ctx, 'Open a session with /sessions, or create a new topic in Telegram.');
+      if (!bound) return await this.send(ctx, this.t('openSessionHint'));
       const metadata = await this.bridge.metadata(bound.id);
-      if (!metadata) { await this.refresh(bound.id); return await this.send(ctx, 'Session gone in DSH. Use /new or /sessions.'); }
+      if (!metadata) { await this.refresh(bound.id); return await this.send(ctx, this.t('sessionGone')); }
       if (command === 'status') return await this.status(bound.id, ctx);
       if (command === 'stop') { if (await this.running(bound.id)) await this.bridge.stop(bound.id); return; }
       if (command === 'files') {
         for (const file of await this.bridge.files(bound.id)) await this.api.document({ chatId: ctx.chatId, threadId: ctx.threadId, name: file.name, content: file.content, caption: file.name });
         return;
       }
-      if (command) return await this.send(ctx, 'Unknown command. Use /help.');
+      if (command) return await this.send(ctx, this.t('unknownCommand'));
       await this.bridge.prompt(bound.id, text, requestId);
-      if (metadata.running) await this.send(ctx, 'Queued in DSH.', {reply_markup:{inline_keyboard:[[this.button('Steer now',ctx,{type:'steer',id:bound.id,requestId})]]}});
+      if (metadata.running) await this.send(ctx, this.t('queued'), {reply_markup:{inline_keyboard:[[this.button(this.t('steerNow'),ctx,{type:'steer',id:bound.id,requestId})]]}});
     } catch (e) {
-      await this.send(ctx, `⚠ ${topicModeError(e)?TOPIC_MODE_HELP:gone(e) ? 'Session gone. Use /new or /sessions.' : cut(e.message, 500)}`, { disable_notification: false });
+      await this.send(ctx, this.t('warning', { error: topicModeError(e) ? this.t('topicModeHelp') : gone(e) ? this.t('goneRetry') : cut(e.message, 500) }), { disable_notification: false });
     }
   }
 
@@ -400,7 +404,7 @@ export class TelegramConsole {
       this.pending.delete(pending);
       for (const [token, action] of this.actions) if (action.pending === pending) this.actions.delete(token);
       resolve(outcome);
-      if (pending.messageId) void this.edit(mapping, pending.messageId, `Approval: ${outcome}`, { inline_keyboard: [] }).catch(() => {});
+      if (pending.messageId) void this.edit(mapping, pending.messageId, this.t('approvalOutcome', { outcome: this.t(`outcome.${outcome}`) }), { inline_keyboard: [] }).catch(() => {});
     } };
     pending.abort = () => pending.finish('cancelled');
     req.signal?.addEventListener('abort', pending.abort, { once: true });
@@ -410,15 +414,15 @@ export class TelegramConsole {
     try {
       await this.serial(id, async () => {
         if (pending.done || this.closed) { pending.finish('cancelled'); return; }
-        const message = await this.send(mapping, formatApproval(req), {
+        const message = await this.send(mapping, formatApproval(req, this.t), {
           parse_mode: 'HTML',
           disable_notification: false,
-          reply_markup: { inline_keyboard: [[this.button('Allow once', mapping, { type: 'approve', pending }), this.button('Deny', mapping, { type: 'deny', pending })]] }
+          reply_markup: { inline_keyboard: [[this.button(this.t('allowOnce'), mapping, { type: 'approve', pending }), this.button(this.t('deny'), mapping, { type: 'deny', pending })]] }
         });
         pending.messageId = message.message_id;
         await this.latest(mapping, message.message_id);
         // Abort/timeout may win while Telegram is sending the card.
-        if (pending.done) await this.edit(mapping, pending.messageId, `Approval: ${pending.outcome}`, { inline_keyboard: [] });
+        if (pending.done) await this.edit(mapping, pending.messageId, this.t('approvalOutcome', { outcome: this.t(`outcome.${pending.outcome}`) }), { inline_keyboard: [] });
       });
     } catch { pending.finish('unavailable'); }
     return result;

@@ -7,7 +7,7 @@
   "type": "module",
   "description": "Telegram Remote — owner-only remote control of DSH sessions through Telegram.",
   "exports": {".": "./index.js", "./client": "./client.js", "./locale/*.json": "./locale/*.json", "./icon": "./telegram-logo.svg"},
-  "files": ["*.js", "cordis.patch.yml", "locale/*.json", "telegram-logo.svg", "README.md", "WIDGETS.md", "THIRD_PARTY_NOTICES.md"],
+  "files": ["*.js", "cordis.patch.yml", "locale/*.json", "telegram-logo.svg", "README*.md", "WIDGETS.md", "THIRD_PARTY_NOTICES.md"],
   "dsh": {"bundle": {"patch": "./cordis.patch.yml"}, "client":{"platform":"web","immediately":true,"inject":["@deepseek-ai/dsh-client-ui-settings"]}},
   "scripts": {"test": "node --test test/*.test.js"},
   "dependencies": {"node-telegram-bot-api": "2.4.0", "parse5": "^8.0.0", "postcss": "^8.5.6", "postcss-value-parser": "^4.2.0", "esbuild": "^0.25.12", "ipaddr.js": "^2.2.0", "zod": "^4.1.0"}

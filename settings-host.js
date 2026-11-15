@@ -1,6 +1,6 @@
-export function createSettingsController({credentials,credentialKey,store,getAdmin,setAdmin}) {
+export function createSettingsController({credentials,credentialKey,store,getAdmin,setAdmin,getLocale}) {
   return {
-    async read(){return {adminUserId:getAdmin(),tokenConfigured:(await credentials.describeRecord(credentialKey)).configured};},
+    async read(){return {adminUserId:getAdmin(),tokenConfigured:(await credentials.describeRecord(credentialKey)).configured,...getLocale?{locale:getLocale()}: {}};},
     async save(input){
       const admin=Number(input.adminUserId);
       if(!Number.isSafeInteger(admin)||admin<=0)throw Error('Admin user ID must be a positive integer.');

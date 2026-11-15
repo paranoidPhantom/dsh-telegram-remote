@@ -1,5 +1,5 @@
 import { TTL, cut } from './console-render.js';
-import { TOPIC_MODE_HELP, topicModeError } from './topic-mode.js';
+import { topicModeError } from './topic-mode.js';
 
 /** Session initiation snapshots live DSH selection; only explicit confirmation creates. */
 export class ConsoleSessions {
@@ -23,11 +23,11 @@ export class ConsoleSessions {
       if (pending && pending.expires > Date.now()) return;
       const source = await c.bound(ctx.chatId, ctx.threadId);
       const model = await c.bridge.newSessionSelection(source?.id);
-      if (!model?.provider || !model?.model) throw new Error('DSH has no model selected. Choose a default model in DSH first.');
+      if (!model?.provider || !model?.model) throw new Error(c.t('noModel'));
       pending = { ctx: { ...ctx }, model: structuredClone(model), native, prompts: pending?.prompts || (prompt ? [prompt] : []), expires: Date.now() + TTL, key };
       this.initiations.set(key, pending);
-      const rows = [[c.button('Confirm new session', ctx, { type: 'new-confirm', pending }), c.button('Cancel', ctx, { type: 'new-cancel', pending })]];
-      const text = `Create DSH session with ${model.provider} / ${model.model}${model.reasoningEffort ? ` · ${model.reasoningEffort}` : ''}?${native ? '\nYour messages wait here until you confirm.' : '\nAfter confirmation, open the new topic using its link.'}`;
+      const rows = [[c.button(c.t('confirmNew'), ctx, { type: 'new-confirm', pending }), c.button(c.t('cancel'), ctx, { type: 'new-cancel', pending })]];
+      const text = c.t('createSession', { provider: model.provider, model: model.model, effort: model.reasoningEffort ? ` · ${model.reasoningEffort}` : '', hint: c.t(native ? 'nativeNewHint' : 'newHint') });
       try {
         const sent = messageId ? await c.edit(ctx, messageId, text, { inline_keyboard: rows }) : await c.send(ctx, text, { reply_markup: { inline_keyboard: rows } });
         pending.messageId = messageId || sent.message_id;
@@ -43,14 +43,14 @@ export class ConsoleSessions {
       for (const [token, action] of c.actions) if (action.pending === pending) c.actions.delete(token);
       if (cancel) {
         this.initiations.delete(pending.key);
-        return c.edit(ctx, messageId, 'Session creation cancelled. Queued messages were not sent to DSH.', { inline_keyboard: [] });
+        return c.edit(ctx, messageId, c.t('creationCancelled'), { inline_keyboard: [] });
       }
       try {
         // Native topic already exists. Never create another topic or redirect it.
-        if (pending.native && await c.bound(ctx.chatId, ctx.threadId)) throw new Error('This topic is already bound.');
+        if (pending.native && await c.bound(ctx.chatId, ctx.threadId)) throw new Error(c.t('topicAlreadyBound'));
         const id = await c.bridge.create();
         const ack = await c.bridge.selectModel(id, pending.model);
-        if (!ack || ack.ok === false || ack.accepted === false || ack.success === false || ack.error) throw new Error(ack?.reason || ack?.error || 'DSH did not acknowledge model selection');
+        if (!ack || ack.ok === false || ack.accepted === false || ack.success === false || ack.error) throw new Error(ack?.reason || ack?.error || c.t('modelUnacknowledged'));
         if (c.closed) return;
         let mapping;
         if (pending.native) {
@@ -61,9 +61,9 @@ export class ConsoleSessions {
           await c.save(id, mapping);
           await c.card(id, mapping, await c.bridge.metadata(id));
         } else mapping = await c.open(id, ctx);
-        if (!mapping) throw new Error('Unable to open the new session topic');
+        if (!mapping) throw new Error(c.t('cannotOpenTopic'));
         const url = c.username ? `https://t.me/${c.username.replace(/^@/, '')}/${mapping.threadId}` : null;
-        await c.edit(ctx, messageId, pending.native ? 'Session ready in this topic.' : 'New session ready. Open the topic below; Telegram cannot switch topics automatically.', { inline_keyboard: url ? [[{ text: 'Open session', url }]] : [] });
+        await c.edit(ctx, messageId, pending.native ? c.t('nativeReady') : c.t('newReady'), { inline_keyboard: url ? [[{ text: c.t('openSession'), url }]] : [] });
         while (pending.prompts.length) {
           const prompt = pending.prompts[0];
           await c.bridge.prompt(id, prompt.text, prompt.requestId);
@@ -74,15 +74,15 @@ export class ConsoleSessions {
         // Retain unsent native text in memory, but never replay a partially sent queue.
         pending.done = false;
         pending.expires = 0;
-        await c.edit(ctx, messageId, topicModeError(error)?TOPIC_MODE_HELP:`⚠ Session setup failed: ${cut(error.message, 350)}. No new-topic link was published. Use /sessions to inspect DSH before retrying.`, { inline_keyboard: [] });
+        await c.edit(ctx, messageId, topicModeError(error)?c.t('topicModeHelp'):c.t('setupFailed', { error: cut(error.message, 350) }), { inline_keyboard: [] });
       }
     });
   }
   async requestClose(id, ctx, messageId) {
     const c = this.console, mapping = await c.mapping(id);
     if (!mapping || mapping.deleted) return;
-    const rows = [[c.button('Delete Telegram topic', ctx, { type: 'close-confirm', id, targetThreadId: mapping.threadId }), c.button('Cancel', ctx, { type: 'close-cancel', id })]];
-    const text = 'Close session in Telegram? This deletes only its Telegram topic. The DSH session and any active DSH run are preserved and continue. Reopen it later with /sessions.';
+    const rows = [[c.button(c.t('deleteTopic'), ctx, { type: 'close-confirm', id, targetThreadId: mapping.threadId }), c.button(c.t('cancel'), ctx, { type: 'close-cancel', id })]];
+    const text = c.t('closeConfirmation');
     return messageId ? c.edit(ctx, messageId, text, { inline_keyboard: rows }) : c.send(ctx, text, { reply_markup: { inline_keyboard: rows } });
   }
   async confirmClose(action) {

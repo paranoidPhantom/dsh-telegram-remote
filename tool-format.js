@@ -115,7 +115,11 @@ function operationReason(input) {
   if(end<0)return null;
   try{return {permission:prefix[1],tool:prefix[2],args:JSON.parse(input.slice(start,end)),warning:input.slice(end).replace(/^\s*\.\s*/, '').trim()};}catch{return null;}
 }
-export function formatApproval(request) {
+export function formatApproval(request, t) {
+  const localizedRender=blocks=>render(blocks.map(item=>{
+    const key={'Approval required':'approvalRequired','Reason':'reason','Command':'command','Paths':'paths','Consequences':'consequences','Requested access':'requestedAccess','Full access — outside the workspace sandbox':'fullAccess','Remove plugin bundle':'removedBundle','Install plugin bundle':'installBundle','Change plugin bundle':'changeBundle','Change plugin':'changePlugin'}[item.text];
+    return key&&t?{...item,text:t(key)}:item;
+  }),LIMITS.approval);
   const req = request && typeof request === 'object' ? request : { reason: request };
   const operation=operationReason(localized(req.reason))??operationReason(localized(req.displayReason))??operationReason(localized(req.description));
   if(operation){
@@ -125,7 +129,7 @@ export function formatApproval(request) {
     const extra=Object.fromEntries(Object.entries(operation.args).filter(([key])=>!['action','target'].includes(key)));fields(extra,blocks);
     blocks.push(block('Requested access','title'),block(operation.permission==='danger-full-access'?'Full access — outside the workspace sandbox':operation.permission));
     if(operation.warning)blocks.push(block('Consequences','title'),block(operation.warning));
-    return render(blocks,LIMITS.approval);
+    return localizedRender(blocks);
   }
   const reason = parse(localized(req.reason));
   const description = parse(localized(req.description));
@@ -158,5 +162,5 @@ export function formatApproval(request) {
   }
   const extra = Object.fromEntries(Object.entries(details).filter(([key]) => !['title', 'action', 'command', 'paths', 'path', 'file_path', 'reason', 'justification', 'consequences', 'consequence', 'permission', 'sandbox_permissions', 'scope'].includes(key)));
   fields(extra, blocks);
-  return render(blocks, LIMITS.approval);
+  return localizedRender(blocks);
 }
