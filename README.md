@@ -1,5 +1,7 @@
 # Telegram Remote
 
+[![npm](https://img.shields.io/npm/v/dsh-telegram-remote?style=flat-square&logo=npm&logoColor=white&label=npm)](https://www.npmjs.com/package/dsh-telegram-remote)
+
 [English](README.md) · [简体中文](README.zh-CN.md) · [Русский](README.ru.md)
 
 Control DeepSeek Harness from a private Telegram bot, built around **Telegram threads and modern native messaging features**.

@@ -1,5 +1,7 @@
 # Удалённый доступ через Telegram
 
+[![npm](https://img.shields.io/npm/v/dsh-telegram-remote?style=flat-square&logo=npm&logoColor=white&label=npm)](https://www.npmjs.com/package/dsh-telegram-remote)
+
 [English](README.md) · [简体中文](README.zh-CN.md) · [Русский](README.ru.md)
 
 Управляйте DeepSeek Harness через личного Telegram-бота с **темами Telegram и современными нативными функциями сообщений**.

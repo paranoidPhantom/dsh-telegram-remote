@@ -1,5 +1,7 @@
 # Telegram 远程控制
 
+[![npm](https://img.shields.io/npm/v/dsh-telegram-remote?style=flat-square&logo=npm&logoColor=white&label=npm)](https://www.npmjs.com/package/dsh-telegram-remote)
+
 [English](README.md) · [简体中文](README.zh-CN.md) · [Русский](README.ru.md)
 
 通过私人 Telegram 机器人控制 DeepSeek Harness，以 **Telegram 话题和现代原生消息功能**为核心。
