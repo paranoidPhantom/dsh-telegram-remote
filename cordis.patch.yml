@@ -1,0 +1,8 @@
+- insert:
+    - id: telegram-console
+      name: '@local/dsh-telegram-console'
+      config:
+        ownerId: 5491328220
+        credentialKey: 'telegram-console/bot'
+        bootstrapPath: '/Users/hdla/sandbox/.telegram-console-bootstrap'
+        statusPath: '/Users/hdla/sandbox/dsh-telegram-console/.runtime-status.json'

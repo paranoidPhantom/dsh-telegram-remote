@@ -1,0 +1,9 @@
+node_modules/
+.runtime-status.json
+.telegram-console-bootstrap
+.credentials*
+.env
+.env.*
+*.tgz
+test-results.txt
+.DS_Store

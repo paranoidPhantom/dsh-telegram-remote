@@ -1,0 +1,6 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {newSessionSelection} from '../session-selection.js';
+test('source selection comes from live DSH not a bot preference',async()=>{const value=await newSessionSelection({metadata:async()=>({selection:{provider:'p',model:'m'}}),controller:{list:()=>{throw Error('unneeded');}}},'s');assert.deepEqual(value,{provider:'p',model:'m'});});
+test('uses most recently active root session, not child',async()=>{const value=await newSessionSelection({controller:{list:async()=>({items:[{updatedAt:5,parentSessionId:'x',projections:{values:{modelSelection:{next:{provider:'child',model:'x'}}}}},{updatedAt:3,projections:{values:{modelSelection:{next:{provider:'p',model:'new'}}}}},{updatedAt:1,projections:{values:{modelSelection:{next:{provider:'p',model:'old'}}}}}]})}});assert.equal(value.model,'new');});
+test('fresh catalog default is fallback and missing default is explicit',async()=>{const controller={list:async()=>({items:[]}),modelCatalog:async()=>({default:{provider:'p',model:'default'}})};assert.equal((await newSessionSelection({controller})).model,'default');controller.modelCatalog=async()=>({});await assert.rejects(newSessionSelection({controller}),/no model/);});
