@@ -46,6 +46,7 @@ export interface AvailableModel {
   id: string;
   name: string;
   description?: string;
+  reasoning?: import("../bot/contracts.js").ModelReasoning;
 }
 export interface RunView extends RunState {
   cwd: string;
@@ -182,6 +183,7 @@ export async function createBridge<Handle>(
           id: model.id,
           name: model.name,
           description: model.description,
+          ...(model.reasoning ? { reasoning: model.reasoning } : {}),
         })),
       );
     },

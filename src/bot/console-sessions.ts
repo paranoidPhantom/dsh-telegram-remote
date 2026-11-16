@@ -218,6 +218,33 @@ export class ConsoleSessions {
             messageId,
             c.t("modelUnchanged", { error: c.t("selectionUnconfirmed") }),
           );
+        if (action.effortSelection) {
+          const model = models.find(
+            (m) => m.provider === action.provider && m.id === action.model,
+          );
+          if (
+            !model?.reasoning?.efforts.length ||
+            (action.reasoningEffort !== undefined &&
+              !model.reasoning.efforts.some(
+                (e) => e.id === action.reasoningEffort,
+              ))
+          )
+            return c.models(
+              pending,
+              ctx,
+              action.provider,
+              action.page || 0,
+              messageId,
+              c.t("modelUnchanged", { error: c.t("selectionUnconfirmed") }),
+            );
+          pending.model = {
+            provider: action.provider,
+            model: action.model,
+            ...(action.reasoningEffort !== undefined
+              ? { reasoningEffort: action.reasoningEffort }
+              : {}),
+          };
+        }
         if (
           pending.model.provider !== action.provider ||
           pending.model.model !== action.model

@@ -1,11 +1,22 @@
 import { z } from "zod";
+import { defaultToolIcon, DEFAULT_TOOL_EMOJI } from "./tool-icons.js";
+export {
+  DEFAULT_TOOL_ICONS,
+  DEFAULT_TOOL_EMOJI,
+  DEFAULT_TOOL_CUSTOM_EMOJI_ID,
+} from "./tool-icons.js";
 
 /** Ordered, case-insensitive glob rules; '*' matches any sequence of characters. */
 export const toolNameRulesSchema = z
   .array(
     z.object({
       pattern: z.string().min(1).max(200),
-      emoji: z.string().min(1).max(32).optional(),
+      emoji: z
+        .string()
+        .min(1)
+        .max(32)
+        .refine((value) => value.length <= 32, "At most 32 UTF-16 units")
+        .optional(),
       customEmojiId: z
         .string()
         .regex(/^[0-9]{1,32}$/)
@@ -14,8 +25,6 @@ export const toolNameRulesSchema = z
   )
   .max(100);
 export type ToolNameRule = z.infer<typeof toolNameRulesSchema>[number];
-export const DEFAULT_TOOL_EMOJI = "🔧";
-export const DEFAULT_TOOL_CUSTOM_EMOJI_ID = "5220046725493828505";
 
 export const normalizeToolName = (name: unknown): string =>
   String(name ?? "")
@@ -40,11 +49,12 @@ export function matchToolName(
     );
     return expression.test(full) || expression.test(normalized);
   });
+  const builtin = defaultToolIcon(full, normalized);
   return {
     normalized,
-    emoji: rule?.emoji ?? DEFAULT_TOOL_EMOJI,
-    // A plain replacement emoji intentionally opts out of the compatibility ID.
-    customEmojiId: rule ? rule.customEmojiId : DEFAULT_TOOL_CUSTOM_EMOJI_ID,
+    emoji: rule ? (rule.emoji ?? DEFAULT_TOOL_EMOJI) : builtin.emoji,
+    // Any explicit rule opts out of built-ins, including plain/catch-all rules.
+    customEmojiId: rule ? rule.customEmojiId : builtin.customEmojiId,
     isChange: /^(write|edit|apply_patch|write_file|edit_file)$/.test(
       normalized,
     ),

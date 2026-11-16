@@ -65,6 +65,45 @@ test("child DTO decoding validates consumed fields without unchecked wire casts"
   await assert.rejects(port.bridge.models(), /response/i);
 });
 
+test("reasoning catalog and explicit/default selections survive the child boundary", async () => {
+  const reasoning: JsonValue = {
+    efforts: [
+      { id: "low", name: "Low" },
+      { id: "high", name: "High", description: "More thinking" },
+    ],
+    defaultEffort: "low",
+  };
+  const port = fixture((method) =>
+    method === "bridge.models"
+      ? [{ provider: "p", id: "m", reasoning }]
+      : { ok: true },
+  );
+  assert.deepEqual((await port.bridge.models())[0]?.reasoning, reasoning);
+  await port.bridge.selectModel("s", {
+    provider: "p",
+    model: "m",
+    reasoningEffort: "high",
+  });
+  await port.bridge.selectModel("s", { provider: "p", model: "m" });
+  const selections = port.calls.slice(1).map((call) => {
+    const payload = call.payload;
+    assert(payload && typeof payload === "object" && !Array.isArray(payload));
+    return payload.selection;
+  });
+  assert.deepEqual(selections, [
+    { provider: "p", model: "m", reasoningEffort: "high" },
+    { provider: "p", model: "m" },
+  ]);
+  const malformed = fixture(() => [
+    {
+      provider: "p",
+      id: "m",
+      reasoning: { efforts: [{ id: 4, name: "Bad" }] },
+    },
+  ]);
+  await assert.rejects(malformed.bridge.models(), /response/i);
+});
+
 test("file download checks chunks, preserves turn scope and releases resource", async () => {
   const port = fixture((method): JsonValue =>
     method === "bridge.fileForTurn"

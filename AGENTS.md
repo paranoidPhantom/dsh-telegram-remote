@@ -57,7 +57,7 @@ Use live `cordis_inspect_list/query` before relying on a Service, Event, Config,
 
 Register every route, tool, listener, timer, projection handle, and asynchronous lifetime under the owning Cordis effect. Unload must abort polling, cancel owned timers, dispose UI registrations, and drain work. A leaked settings route previously caused `duplicate exact route "/telegram-console/settings"` activation failures: test unload/reload, not only first activation. Do not restart the Host running your own agent.
 
-Session projections are pure JSON folds; preserve reference identity for irrelevant events and bump `stateVersion` when their shape/semantics change. `runView` adds current working directory and touched-file metadata. `outputs` records committed normal text with sequence IDs and tool-count boundaries; transient `partialAnswer` is separate. Never expose reasoning chunks. Do not invent Session event types or treat bot delivery metadata as session truth.
+Session projections are pure JSON folds; preserve reference identity for irrelevant events and bump `stateVersion` when their shape/semantics change. `runView` adds current working directory and touched-file metadata. `outputs` records committed normal text with sequence IDs and tool-count boundaries; transient `partialAnswer` is separate. Only explicit provider/session reasoning text may become a bounded 240-character preview (at most 64 per turn) in the collapsed log, clearly localized and escaped. Never expose raw chunks, encrypted reasoning/signatures, replay metadata or internal agent state; never mix reasoning into normal answers or drafts. Keep real tool counts/toolLog separate from chronological activity and its output logCount boundaries. Do not invent Session event types or treat bot delivery metadata as session truth.
 
 ## Bot behavior to preserve
 
@@ -74,7 +74,7 @@ Session projections are pure JSON folds; preserve reference identity for irrelev
 ### Streaming, logs, and delivery
 - Use native `sendMessageDraft` with stable nonzero draft IDs and `can_stop: true`. Validate native stopped-generation updates against chat/topic/current draft. Custom Stop is a fallback only when drafts are unsupported.
 - Empty draft placeholder is **`Deep diving`**, without ellipsis (localized equivalents apply).
-- Latest tool call lives in the draft. `toolNameRules` in plugin config selects per-tool plain/custom emoji consistently in drafts, call formatting and logs (ordered case-insensitive `*` globs against full/normalized names); unmatched tools retain 🔧 / custom emoji `5220046725493828505`. Logs have no ordered numbering or working/finished title. Move the latest call into the collapsed log when another tool/text replaces it or the turn ends. Do not dump read-file contents. Keep workspace-relative paths monospace in both drafts and logs.
+- Latest tool call lives in the draft. `toolNameRules` in plugin config selects per-tool plain/custom emoji consistently in drafts, call formatting and logs (ordered case-insensitive `*` globs against full/normalized names); built-in category icons use the owner-selected IDs in `TOOL_ICONS.md`, with 🔩 / `5260249805522744465` for unknown tools. Logs have no ordered numbering or working/finished title. Move the latest call into the collapsed log when another tool/text replaces it or the turn ends. Do not dump read-file contents. Keep workspace-relative paths monospace in both drafts and logs.
 - Each completed normal assistant message becomes durable output immediately. Seal the preceding tool-log segment above it; later tools start a new log below it. Preserve all prior messages and stopped partial text; deduplicate committed outputs/finals.
 - Persist accepted Telegram message IDs before cosmetic toolbar/log updates. Never replay an ambiguous send blindly; inspect pending receipts rather than claiming success. Transport errors and Telegram rejection are not interchangeable.
 - Telegram HTML must escape untrusted data; entity offsets/lengths are UTF-16, including astral emoji. Local Markdown file references become monospace labels, not clickable local-path links. External HTTP(S) links remain links. Keep chunk boundaries and tags valid.
@@ -95,15 +95,15 @@ Session projections are pure JSON folds; preserve reference identity for irrelev
 
 ## Tool icon configuration
 
-Set `toolNameRules` in the plugin's DSH config and reload the plugin (not the credential Settings form). The first matching rule wins. `pattern` is a case-insensitive glob with only `*` special; it matches the full tool name or the final namespace/MCP component (`functions.read`, `fs/read`, and `mcp__fs__read` normalize to `read`). Unmatched tools retain 🔧 and Telegram custom emoji `5220046725493828505`. A matched rule may set `emoji` (fallback text, default 🔧) and `customEmojiId` (decimal string); omitting the ID uses plain text. Maximum 100 rules, 200 characters per pattern and 32 UTF-16 units per fallback emoji. Tool identifiers and summaries remain escaped text; rules cannot inject markup. This shared matcher also classifies file mutations for compact log detail filtering.
+Set `toolNameRules` in the plugin's DSH config and reload the plugin (not the credential Settings form). The first matching rule wins. `pattern` is a case-insensitive glob with only `*` special; it matches the full tool name or the final namespace/MCP component (`functions.read`, `fs/read`, and `mcp__fs__read` normalize to `read`). Explicit rules override built-in category defaults documented in `TOOL_ICONS.md`; unknown tools use 🔩 and Telegram custom emoji `5260249805522744465`. A matched rule may set `emoji` (fallback text, default 🔩) and `customEmojiId` (decimal string); omitting the ID uses plain text. Maximum 100 rules, 200 characters per pattern and 32 UTF-16 units per fallback emoji. Tool identifiers and summaries remain escaped text; rules cannot inject markup. This shared matcher also classifies file mutations for compact log detail filtering.
 
 ```yaml
 toolNameRules:
   - pattern: 'read*'
-    emoji: '📖'
-    customEmojiId: '5220046725493828505' # replace with the desired Telegram emoji ID
+    emoji: '👀'
+    customEmojiId: '5280881372418816002' # read-files default
   - pattern: '*'
-    emoji: '🔧' # plain fallback for all other tools
+    emoji: '🔩' # plain fallback for all other tools
 ```
 
 ## Localization and documentation

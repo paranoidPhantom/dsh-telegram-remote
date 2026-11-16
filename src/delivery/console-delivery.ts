@@ -17,6 +17,7 @@ import type {
   DeliveryPort,
 } from "../bot/contracts.js";
 import { randomBytes, createHash } from "node:crypto";
+import { TodoDelivery } from "./todo-delivery.js";
 
 const textHash = (text: string) =>
   createHash("sha256").update(text).digest("hex");
@@ -33,6 +34,10 @@ const priorTurn = (candidate: TurnId, current: TurnId): boolean => {
 };
 const hasText = (text: unknown): text is string =>
   typeof text === "string" && Boolean(text.trim());
+const logRows = (view: RunView, delivery: RunReceipt) =>
+  delivery.logFormat === "activity-v1"
+    ? (view.runLog ?? view.toolLog ?? [])
+    : (view.toolLog ?? []);
 const draftText = (view: RunView): string =>
   Object.hasOwn(view, "partialAnswer")
     ? view.partialAnswer || ""
@@ -49,10 +54,13 @@ import {
 
 /** Serialized run delivery, Telegram draft lifecycle and durable message ids. */
 export class RunDelivery {
+  readonly todos: TodoDelivery;
   readonly pageFrames = new Map<string, string>();
   readonly activations = new Map<string, string>();
   readonly heartbeats = new Map<string, Promise<void>>();
-  constructor(readonly console: DeliveryPort) {}
+  constructor(readonly console: DeliveryPort) {
+    this.todos = new TodoDelivery(console);
+  }
   async refreshDrafts() {
     await Promise.all(
       [...this.console.active].map(([id]) => {
@@ -104,13 +112,15 @@ export class RunDelivery {
     key: string,
   ) {
     const start = delivery.logStart || 0;
+    const rows = logRows(view, delivery);
+    const latest = rows.at(-1);
     const end =
       view.logEnd ??
-      (view.final || draftText(view)
-        ? (view.toolLog || []).length
-        : Math.max(start, (view.toolLog || []).length - 1));
+      (view.final || draftText(view) || latest?.kind === "reasoning"
+        ? rows.length
+        : Math.max(start, rows.length - 1));
     const pages = toolLogPages(
-      (view.toolLog || []).slice(start, end),
+      rows.slice(start, end),
       view.final,
       view.cwd,
       this.console.t,
@@ -194,8 +204,10 @@ export class RunDelivery {
     if (!mapping || mapping.deleted || delivery.final || delivery.superseded)
       return;
     const latestTool =
-      !draftText(view) && (view.toolLog || []).length > (delivery.logStart || 0)
-        ? view.toolLog?.at(-1)
+      !draftText(view) &&
+      logRows(view, delivery).length > (delivery.logStart || 0) &&
+      logRows(view, delivery).at(-1)?.kind !== "reasoning"
+        ? logRows(view, delivery).at(-1)
         : null;
     const summary = latestTool
       ? relativePathText(latestTool.summary || "", view.cwd)
@@ -390,12 +402,16 @@ export class RunDelivery {
     const boundary =
       typeof recordedEnd === "number" && Number.isInteger(recordedEnd)
         ? recordedEnd
-        : typeof output.toolCount === "number" &&
-            Number.isInteger(output.toolCount)
-          ? output.toolCount
-          : known?.complete
-            ? delivery.logStart || 0
-            : (view.toolLog || []).length;
+        : delivery.logFormat === "activity-v1" &&
+            typeof output.logCount === "number" &&
+            Number.isInteger(output.logCount)
+          ? output.logCount
+          : typeof output.toolCount === "number" &&
+              Number.isInteger(output.toolCount)
+            ? output.toolCount
+            : known?.complete
+              ? delivery.logStart || 0
+              : logRows(view, delivery).length;
     if (known?.complete && !known.pending) {
       if ((delivery.logStart || 0) >= boundary) return;
       // The accepted output can outlive the following boundary checkpoint.
@@ -477,6 +493,11 @@ export class RunDelivery {
     return this.console.serial(id, async () => {
       let mapping = await this.console.mapping(id);
       if (!mapping || mapping.deleted || this.console.closed) return;
+      await this.cosmetic(() => this.todos.onRun(id, mapping!, view));
+      // The checklist receipt is stored on the mapping; retain it in subsequent
+      // lifecycle saves, without making checklist failures gate normal output.
+      mapping = await this.console.mapping(id);
+      if (!mapping || mapping.deleted || this.console.closed) return;
       const key = `console:run:${id}:${view.turn}`;
       const stored = await this.console.store.get(key);
       const existing = historicalReceipt(stored);
@@ -554,6 +575,7 @@ export class RunDelivery {
         retired.push(mapping.latestControlMessageId || mapping.cardId);
         delivery = {
           id,
+          logFormat: "activity-v1",
           draftId: randomBytes(4).readUInt32BE(0) || 1,
           chatId: mapping.chatId,
           threadId: mapping.threadId,
@@ -570,6 +592,8 @@ export class RunDelivery {
       try {
         if (!view.toolLog?.length && previous?.view.turn === view.turn)
           view.toolLog = previous.view.toolLog;
+        if (!view.runLog && previous?.view.turn === view.turn)
+          view.runLog = previous.view.runLog;
         for (const output of view.outputs || []) {
           if (typeof output.id === "string" && hasText(output.text))
             await this.completedOutput(mapping, delivery, key, output, view);

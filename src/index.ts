@@ -842,6 +842,7 @@ export async function apply<Handle>(
             "step/start",
             "tool/call",
             "tool/result",
+            "todo/write",
             "assistant/message",
             "assistant/attempt",
             "turn/end",
@@ -864,6 +865,7 @@ export async function apply<Handle>(
             session.id,
             view,
             event.type === "turn/start" ||
+              event.type === "todo/write" ||
               event.type === "turn/end" ||
               event.type === "assistant/message",
           );

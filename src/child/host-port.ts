@@ -209,6 +209,18 @@ export function createHostPort(options: HostPortOptions) {
             id: z.string(),
             name: z.string().optional(),
             description: z.string().optional(),
+            reasoning: z
+              .object({
+                efforts: z.array(
+                  z.object({
+                    id: z.string(),
+                    name: z.string(),
+                    description: z.string().optional(),
+                  }),
+                ),
+                defaultEffort: z.string().optional(),
+              })
+              .optional(),
           }),
         ),
         await call("models"),

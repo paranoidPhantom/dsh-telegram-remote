@@ -93,7 +93,9 @@ test("semantic adapter copies only presentation fields without mutating source",
     turn: 2,
     cwd: ".",
     elapsed: 4,
-    outputs: [{ id: "output", text: "answer", toolCount: 1 }],
+    outputs: [{ id: "output", text: "answer", toolCount: 1, logCount: 1 }],
+    todos: [{ content: "Semantic task", status: "pending" as const }],
+    todoVersion: 10,
     toolLog: [
       {
         callId: "call",
@@ -108,6 +110,8 @@ test("semantic adapter copies only presentation fields without mutating source",
   };
   const mapped = semanticRunView(source);
   assert.equal(mapped.turn, 2);
+  assert.deepEqual(mapped.todos, source.todos);
+  assert.equal(mapped.todoVersion, 10);
   assert.deepEqual(mapped.outputs, source.outputs);
   assert.notEqual(mapped.outputs, source.outputs);
   assert.notEqual(mapped.outputs?.[0], source.outputs[0]);

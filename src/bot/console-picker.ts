@@ -209,6 +209,44 @@ export class ConsolePicker {
             },
       ),
     ]);
+    const current = models.find(selected);
+    if (current?.reasoning?.efforts.length) {
+      const choices = [
+        {
+          id: undefined,
+          name: this.t("reasoningDefault", {
+            effort: current.reasoning.defaultEffort || "—",
+          }),
+        },
+        ...current.reasoning.efforts,
+      ];
+      for (const effort of choices)
+        rows.push([
+          this.console.button(
+            `${selection?.reasoningEffort === effort.id ? "✓ " : ""}${this.t("reasoningEffort")}: ${effort.name}`,
+            ctx,
+            typeof target === "string"
+              ? {
+                  type: "select",
+                  id: target,
+                  provider,
+                  model: current.id,
+                  page,
+                  effortSelection: true,
+                  reasoningEffort: effort.id,
+                }
+              : {
+                  type: "new-select",
+                  pending: target,
+                  provider,
+                  model: current.id,
+                  page,
+                  effortSelection: true,
+                  reasoningEffort: effort.id,
+                },
+          ),
+        ]);
+    }
     rows.push(
       ...this.console.navigation(
         ctx,
@@ -258,9 +296,29 @@ export class ConsolePicker {
       let metadata = prior,
         notice = "";
       try {
+        let reasoningEffort =
+          prior?.selection?.provider === action.provider &&
+          prior.selection.model === action.model
+            ? prior.selection.reasoningEffort
+            : undefined;
+        if (action.effortSelection) {
+          const model = (await this.console.bridge.models()).find(
+            (m) => m.provider === action.provider && m.id === action.model,
+          );
+          if (
+            !model?.reasoning?.efforts.length ||
+            (action.reasoningEffort !== undefined &&
+              !model.reasoning.efforts.some(
+                (e) => e.id === action.reasoningEffort,
+              ))
+          )
+            throw new Error(this.t("selectionUnconfirmed"));
+          reasoningEffort = action.reasoningEffort;
+        }
         const ack = await this.console.bridge.selectModel(action.id, {
           provider: action.provider,
           model: action.model,
+          ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
         });
         if (
           !ack ||
@@ -275,7 +333,8 @@ export class ConsolePicker {
         metadata = await this.console.bridge.metadata(action.id);
         if (
           metadata?.selection?.provider !== action.provider ||
-          metadata?.selection?.model !== action.model
+          metadata?.selection?.model !== action.model ||
+          metadata?.selection?.reasoningEffort !== reasoningEffort
         ) {
           metadata = prior;
           throw new Error(this.t("selectionUnconfirmed"));

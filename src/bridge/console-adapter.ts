@@ -53,10 +53,12 @@ export function consoleBridge(bridge: Bridge): ConsoleBridge {
   };
 }
 
-/** Only semantic normal output is published. Never serialize the projection wholesale. */
+/** Only semantic normal output and bounded reasoning previews are published. Never serialize the projection wholesale. */
 export function semanticRunView(view: HostRunView): RunView & { turn: number } {
   return {
     turn: view.turn,
+    todos: view.todos,
+    todoVersion: view.todoVersion,
     final: view.final,
     status: view.status,
     answer: view.answer,
@@ -65,6 +67,7 @@ export function semanticRunView(view: HostRunView): RunView & { turn: number } {
       id: output.id,
       text: output.text,
       toolCount: output.toolCount,
+      logCount: output.logCount,
     })),
     toolLog: view.toolLog.map((tool) => ({
       name: tool.name,
@@ -73,6 +76,25 @@ export function semanticRunView(view: HostRunView): RunView & { turn: number } {
       ...(tool.resultHtml ? { resultHtml: tool.resultHtml } : {}),
       callId: tool.callId,
     })),
+    runLog: view.activityLog.flatMap<import("../bot/contracts.js").ToolSummary>(
+      (entry) => {
+        if (entry.kind === "reasoning")
+          return [{ kind: "reasoning" as const, text: entry.text }];
+        const tool = view.toolLog.find((tool) => tool.callId === entry.callId);
+        return tool
+          ? [
+              {
+                kind: "tool" as const,
+                name: tool.name,
+                summary: tool.summary,
+                status: tool.status,
+                callId: tool.callId,
+                ...(tool.resultHtml ? { resultHtml: tool.resultHtml } : {}),
+              },
+            ]
+          : [];
+      },
+    ),
     touchedFiles: view.touchedFiles.map((file) => ({
       path: file.path,
       kind: file.kind,

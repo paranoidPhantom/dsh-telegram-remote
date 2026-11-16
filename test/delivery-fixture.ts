@@ -52,6 +52,7 @@ interface StoredDelivery {
   final?: boolean;
   superseded?: boolean;
   outputs?: OutputReceipt[];
+  logStart?: number;
   logMessageIds?: number[];
   sealedLogMessageIds?: number[];
   finalMessageIds?: number[];

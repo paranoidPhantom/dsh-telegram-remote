@@ -27,6 +27,8 @@ export interface SessionMetadata {
   running?: boolean;
 }
 export interface ToolLogEntry {
+  kind?: "tool" | "reasoning";
+  text?: string;
   name?: string;
   summary?: string;
   status?: string;
@@ -168,6 +170,8 @@ export function toolLogPages(
     );
   };
   const rows = entries.map((tool) => {
+    if (tool.kind === "reasoning")
+      return `${toolEmojiHtml("reasoning", rules)} <b>${html(t("reasoningPreview"))}</b> — ${html(cut(tool.text || "", 240))}`;
     const status = tool.status || "running";
     const summary = tool.summary
       ? ` — <code>${preview(relativePathText(tool.summary, cwd), 120)}</code>`

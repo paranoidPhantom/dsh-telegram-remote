@@ -13,6 +13,15 @@ export interface TopicContext {
   threadId: number;
 }
 export interface TopicBinding extends TopicContext {
+  todoReceipt?: {
+    chatId: number;
+    threadId: number;
+    messageId?: number;
+    hash?: string;
+    pinned?: boolean;
+    pending?: boolean;
+    version?: number;
+  };
   cardId?: number;
   latestControlMessageId?: number;
   topicTitle?: string;
@@ -48,11 +57,16 @@ export interface WorkspaceEntry {
   title: string;
   path: string;
 }
+export interface ModelReasoning {
+  efforts: { id: string; name: string; description?: string }[];
+  defaultEffort?: string;
+}
 export interface ModelEntry {
   provider: string;
   id: string;
   name?: string;
   description?: string;
+  reasoning?: ModelReasoning;
 }
 export interface SelectionReceipt {
   ok?: boolean;
@@ -76,9 +90,16 @@ export interface CommittedOutput {
   id: string;
   text: string;
   toolCount?: number;
+  logCount?: number;
 }
 /** Committed normal text and the current transient attempt are deliberately separate. */
+export interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
 export interface RunView {
+  todos?: TodoItem[];
+  todoVersion?: number;
   turn: TurnId;
   final?: boolean;
   status?: string;
@@ -87,6 +108,8 @@ export interface RunView {
   partialId?: string;
   outputs?: CommittedOutput[];
   toolLog?: ToolSummary[];
+  /** Chronological presentation rows; reasoning never counts as a tool call. */
+  runLog?: ToolSummary[];
   touchedFiles?: TouchedFile[];
   cwd?: string;
   tools?: string[];
@@ -119,6 +142,8 @@ export interface RunReceipt extends TopicContext {
   logMessageIds?: number[];
   sealedLogMessageIds?: number[];
   logStart?: number;
+  /** Absent receipts retain legacy tool-only boundary indices for this turn. */
+  logFormat?: "activity-v1";
   lastOutputHash?: string;
 }
 /** Old activations can have only message IDs; they are used solely for cleanup. */
@@ -287,6 +312,8 @@ export type ConsoleAction =
       pending: PendingInitiation;
       provider: string;
       model: string;
+      reasoningEffort?: string;
+      effortSelection?: boolean;
       page?: number;
     }
   | {
@@ -310,6 +337,8 @@ export type ConsoleAction =
       id: SessionId;
       provider: string;
       model: string;
+      reasoningEffort?: string;
+      effortSelection?: boolean;
       page?: number;
     }
   | { type: "approve" | "deny"; pending: PendingApproval };
@@ -562,6 +591,7 @@ function isHistoricalReceipt(value: unknown): value is HistoricalRunReceipt {
   return (
     isRecord(value) &&
     optionalFields(value, ["id", "lastOutputHash"], isString) &&
+    (value.logFormat === undefined || value.logFormat === "activity-v1") &&
     optionalFields(
       value,
       ["draftId", "chatId", "threadId", "messageId", "logStart"],

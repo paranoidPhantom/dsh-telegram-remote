@@ -83,19 +83,19 @@ test("interstitial committed messages publish immediately, format, and dedupe fr
   );
   const drafts = f.calls.filter((x) => x.method === "sendMessageDraft");
   assert.ok(drafts.some((x) => x.params.text === "Deep diving"));
-  const toolDraft = drafts.find((x) => x.params.text === "🔧 tool");
+  const toolDraft = drafts.find((x) => x.params.text === "🔩 tool");
   assert.ok(toolDraft);
   assert.deepEqual(toolDraft.params.entities, [
     {
       type: "custom_emoji",
       offset: 0,
       length: 2,
-      custom_emoji_id: "5220046725493828505",
+      custom_emoji_id: "5260249805522744465",
     },
   ]);
   assert.ok(
     drafts.every(
-      (x) => x.params.text === "Deep diving" || x.params.text === "🔧 tool",
+      (x) => x.params.text === "Deep diving" || x.params.text === "🔩 tool",
     ),
   );
 });

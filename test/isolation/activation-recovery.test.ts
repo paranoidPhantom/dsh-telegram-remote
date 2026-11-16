@@ -607,7 +607,7 @@ test(
         turn: 2,
         final: true,
         answer: "future",
-        outputs: [{ id: "99", text: "future", toolCount: 0 }],
+        outputs: [{ id: "99", text: "future", toolCount: 0, logCount: 0 }],
       });
       mock.emit({ type: "turn/end", seq: 100, data: {} });
       gate.resolve({ status: "delivered" });

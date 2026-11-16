@@ -17,6 +17,7 @@ export interface HostSession {
 export interface ModelSelection {
   provider: string;
   model: string;
+  reasoningEffort?: string;
 }
 export interface ModelSelectionProjection {
   next?: ModelSelection | null;
@@ -44,7 +45,12 @@ export interface ModelCatalog {
   groups: {
     id: string;
     name: string;
-    models: { id: string; name: string; description?: string }[];
+    models: {
+      id: string;
+      name: string;
+      description?: string;
+      reasoning?: import("../bot/contracts.js").ModelReasoning;
+    }[];
   }[];
 }
 export interface QueuedRequest {

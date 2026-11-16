@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-// Keep the persisted v6 shape exactly aligned with the original projection.
+// Persisted v8 retains the semantic checklist across turn boundaries.
+export const todoEntrySchema = z.object({
+  content: z.string(),
+  status: z.enum(["pending", "in_progress", "completed"]),
+});
 export const touchedEntrySchema = z.object({
   path: z.string(),
   kind: z.enum(["added", "removed", "edited"]),
@@ -21,11 +25,23 @@ export const toolEntrySchema = z.object({
   resultHtml: z.string().optional(),
 });
 export const runStateSchema = z.object({
+  todos: z.array(todoEntrySchema),
+  todoVersion: z.number().int().nonnegative(),
   turn: z.number(),
   status: z.string(),
   step: z.string(),
   tools: z.number(),
   toolLog: z.array(toolEntrySchema),
+  activityLog: z.array(
+    z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("tool"), callId: z.string() }),
+      z.object({
+        kind: z.literal("reasoning"),
+        id: z.string(),
+        text: z.string().max(240),
+      }),
+    ]),
+  ),
   touchedFiles: z.array(touchedEntrySchema),
   workspaceSeqs: z.array(z.number()),
   outputs: z.array(
@@ -33,6 +49,7 @@ export const runStateSchema = z.object({
       id: z.string(),
       text: z.string(),
       toolCount: z.number().int().nonnegative(),
+      logCount: z.number().int().nonnegative(),
     }),
   ),
   partialAnswer: z.string(),
@@ -75,7 +92,8 @@ export type ToolResultEvent = TimedEvent<"tool/result", ToolResultData>;
 export interface AttemptRecord {
   type: string;
   texts?: readonly string[];
-  chunk?: { type: string; text?: string };
+  index?: number;
+  chunk?: { type: string; text?: string; index?: number; block?: ContentBlock };
 }
 export type RunEvent =
   | TimedEvent<"turn/start", { turn: number }>
@@ -85,6 +103,7 @@ export type RunEvent =
       "tool/call",
       { callId: string; name: string; arguments: unknown }
     >
+  | EventEnvelope<"todo/write", { todos: z.infer<typeof todoEntrySchema>[] }>
   | ToolResultEvent
   | (EventEnvelope<"workspace/changes", { turn: number }> & { seq: number })
   | EventEnvelope<
@@ -109,6 +128,7 @@ export function isRunEvent(event: RunEventInput): event is RunEvent {
     case "request/header":
     case "step/start":
     case "tool/call":
+    case "todo/write":
     case "tool/result":
     case "workspace/changes":
     case "assistant/message":

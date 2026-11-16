@@ -20,8 +20,8 @@ test("each normal assistant message is retained while reasoning is excluded", ()
       },
     });
   assert.deepEqual(s.outputs, [
-    { id: "1", text: "Output 1", toolCount: 0 },
-    { id: "2", text: "Output 2", toolCount: 0 },
+    { id: "1", text: "Output 1", toolCount: 0, logCount: 1 },
+    { id: "2", text: "Output 2", toolCount: 0, logCount: 2 },
   ]);
   assert.equal(s.answer, "Output 2");
   assert.ok(runProjection.stateSchema.safeParse(s).success);

@@ -7,6 +7,7 @@ import {
 import {
   isRunEvent,
   runStateSchema,
+  todoEntrySchema,
   type ContentBlock,
   type RunEventInput,
   type RunState,
@@ -27,6 +28,40 @@ const preview = (text: unknown, max = 320): string => {
     .trim();
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 };
+/** Only explicit provider-neutral reasoning text is admitted, never replay state,
+ * signatures, encrypted content, provider payloads or internal agent objects. */
+export function reasoningPreview(parts: Iterable<string>): string {
+  let text = "";
+  for (const part of parts) {
+    text = (text + part).replace(/\s+/g, " ").trimStart();
+    if (text.length > 240) break;
+  }
+  text = text.trim();
+  if (text.length <= 240) return text;
+  let end = 239;
+  if (/[\uD800-\uDBFF]/.test(text.charAt(end - 1))) end--;
+  return `${text.slice(0, end)}…`;
+}
+function withReasoning(
+  state: RunState,
+  id: string,
+  parts: Iterable<string>,
+): RunState {
+  const text = reasoningPreview(parts);
+  if (
+    !text ||
+    state.activityLog.filter((entry) => entry.kind === "reasoning").length >=
+      64 ||
+    state.activityLog.some(
+      (entry) => entry.kind === "reasoning" && entry.id === id,
+    )
+  )
+    return state;
+  return {
+    ...state,
+    activityLog: [...state.activityLog, { kind: "reasoning", id, text }],
+  };
+}
 export function toolSummary(raw: unknown): string {
   let args: unknown = raw;
   if (typeof raw === "string") {
@@ -54,11 +89,14 @@ export function toolSummary(raw: unknown): string {
 }
 export function initialRun(): RunState {
   return {
+    todos: [],
+    todoVersion: 0,
     turn: 0,
     status: "idle",
     step: "",
     tools: 0,
     toolLog: [],
+    activityLog: [],
     touchedFiles: [],
     workspaceSeqs: [],
     outputs: [],
@@ -76,10 +114,19 @@ export function foldRun(state: RunState, event: RunEventInput): RunState {
     case "turn/start":
       return {
         ...initialRun(),
+        todos: state.todos,
+        todoVersion: state.todoVersion,
         turn: event.data.turn,
         status: "thinking",
         started: event.time,
       };
+    case "todo/write": {
+      const parsed = todoEntrySchema.array().safeParse(event.data?.todos);
+      if (!parsed.success) return state;
+      const version = event.seq ?? state.todoVersion + 1;
+      if (version <= state.todoVersion) return state;
+      return { ...state, todos: parsed.data, todoVersion: version };
+    }
     case "request/header":
       return { ...state, model: event.data.header.config.model };
     case "step/start":
@@ -94,6 +141,7 @@ export function foldRun(state: RunState, event: RunEventInput): RunState {
         status: "running",
         step: d.name,
         tools: state.tools + 1,
+        activityLog: [...state.activityLog, { kind: "tool", callId: d.callId }],
         toolLog: [
           ...state.toolLog,
           {
@@ -146,17 +194,49 @@ export function foldRun(state: RunState, event: RunEventInput): RunState {
       const d = event.data;
       const text = textOf(d.message.content);
       const id = String(event.seq ?? d.message.id ?? `${d.turn}:${d.step}`);
+      state = withReasoning(
+        state,
+        `message:${id}`,
+        (d.message.content ?? [])
+          .filter(
+            (block) =>
+              block.type === "reasoning" && typeof block.text === "string",
+          )
+          .map((block) => block.text!),
+      );
       return {
         ...state,
         answer: text,
         partialAnswer: "",
         outputs:
           text && !state.outputs.some((output) => output.id === id)
-            ? [...state.outputs, { id, text, toolCount: state.toolLog.length }]
+            ? [
+                ...state.outputs,
+                {
+                  id,
+                  text,
+                  toolCount: state.toolLog.length,
+                  logCount: state.activityLog.length,
+                },
+              ]
             : state.outputs,
       };
     }
     case "assistant/attempt": {
+      const parts = (event.data.stream ?? []).flatMap((record) =>
+        record.type === "reasoning-chunks"
+          ? (record.texts ?? [])
+          : record.type === "chunk" &&
+              record.chunk?.type === "reasoning-delta" &&
+              typeof record.chunk.text === "string"
+            ? [record.chunk.text]
+            : [],
+      );
+      state = withReasoning(
+        state,
+        `attempt:${event.seq ?? state.activityLog.length}`,
+        parts,
+      );
       const text = (event.data.stream ?? [])
         .map((record) =>
           record.type === "text-chunks"
@@ -189,7 +269,7 @@ export function foldRun(state: RunState, event: RunEventInput): RunState {
 }
 export const runProjection = {
   key: "telegramConsoleRun",
-  stateVersion: 6,
+  stateVersion: 8,
   stateSchema: runStateSchema,
   init: initialRun,
   apply: foldRun,

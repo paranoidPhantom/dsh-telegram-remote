@@ -140,6 +140,41 @@ function fixture(t: TestContext) {
     );
   return { c, calls, bridgeCalls, data, bridge, api, msg, cb, last, token };
 }
+test("new-session picker selects reasoning effort and can restore model default", async (t) => {
+  const f = fixture(t);
+  f.bridge.models = async () => [
+    {
+      provider: "p",
+      id: "m",
+      reasoning: {
+        efforts: [
+          { id: "low", name: "Low" },
+          { id: "high", name: "High" },
+        ],
+        defaultEffort: "low",
+      },
+    },
+  ];
+  await f.c.handleUpdate(f.msg("/new"));
+  await f.c.handleUpdate(f.cb(f.token("Model")));
+  await f.c.handleUpdate(f.cb(f.token("✓ p")));
+  await f.c.handleUpdate(f.cb(f.token("Reasoning effort: Low")));
+  assert.match(requiredField(f.last().params.text), /m · low/);
+  assert.ok(
+    inlineMarkup(f.last().params.reply_markup)
+      .inline_keyboard.flat()
+      .some((b) => b.text === "✓ Reasoning effort: Low"),
+  );
+  await f.c.handleUpdate(f.cb(f.token("Default")));
+  assert.doesNotMatch(requiredField(f.last().params.text), /m · low/);
+  assert.equal(f.bridgeCalls.filter((x) => x[0] === "select").length, 0);
+  await f.c.handleUpdate(f.cb(f.token("Confirm")));
+  assert.deepEqual(
+    f.bridgeCalls.find((x) => x[0] === "select"),
+    ["select", "new", { provider: "p", model: "m" }],
+  );
+});
+
 test("/new confirms snapshot exactly once and edits same confirmation with direct URL", async (t) => {
   const f = fixture(t);
   await f.c.handleUpdate(f.msg("/new"));

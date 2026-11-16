@@ -44,7 +44,7 @@ test("write/edit drafts show relative code paths", async () => {
       },
     );
     assert.ok(draft);
-    assert.equal(requiredField(draft.text), `🔧 ${name} — src/a.js`);
+    assert.equal(requiredField(draft.text), `✏️ ${name} — src/a.js`);
     const entity = requiredField(draft.entities).find((x) => x.type === "code");
     assert.ok(entity);
     assert.ok(draft);

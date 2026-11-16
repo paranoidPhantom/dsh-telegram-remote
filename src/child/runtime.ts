@@ -32,6 +32,7 @@ const runSchema = z.object({
         id: z.string(),
         text: z.string(),
         toolCount: z.number().optional(),
+        logCount: z.number().int().nonnegative().optional(),
       }),
     )
     .optional(),
@@ -49,6 +50,28 @@ const runSchema = z.object({
       }),
     )
     .optional(),
+  runLog: z
+    .array(
+      z.object({
+        kind: z.enum(["tool", "reasoning"]),
+        text: z.string().max(240).optional(),
+        name: z.string().optional(),
+        summary: z.string().optional(),
+        status: z.string().optional(),
+        resultHtml: z.string().optional(),
+        callId: z.string().optional(),
+      }),
+    )
+    .optional(),
+  todos: z
+    .array(
+      z.object({
+        content: z.string(),
+        status: z.enum(["pending", "in_progress", "completed"]),
+      }),
+    )
+    .optional(),
+  todoVersion: z.number().int().nonnegative().optional(),
   touchedFiles: z
     .array(
       z.object({
