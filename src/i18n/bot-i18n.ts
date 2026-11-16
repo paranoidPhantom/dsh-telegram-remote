@@ -225,9 +225,9 @@ const messages = {
     "Создать сессию DSH с {provider} / {model}{effort}?{hint}",
   ],
   nativeNewHint: [
-    "\nYour messages wait here until you confirm.",
-    "\n确认之前，您的消息将在此等待。",
-    "\nВаши сообщения будут ждать здесь до подтверждения.",
+    "\nChoose a model, then confirm. Your messages wait here. Cancel deletes this topic and its history.",
+    "\n请选择模型后确认。您的消息将在此等待。取消将删除此话题及其历史记录。",
+    "\nВыберите модель и подтвердите. Ваши сообщения будут ждать здесь. Отмена удалит эту тему и её историю.",
   ],
   newHint: [
     "\nAfter confirmation, open the new topic using its link.",
