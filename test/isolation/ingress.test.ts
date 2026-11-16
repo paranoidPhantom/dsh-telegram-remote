@@ -174,6 +174,136 @@ test("handler failure is durably failed and not hot replayed", async () => {
   await running;
 });
 
+test("classifier failure settles failed exactly once and does not block later good entries", async () => {
+  const f = fixture();
+  for (let id = 1; id <= 3; id++) await f.options.admit(update(id));
+  const classify = f.options.classify;
+  const settle = f.options.settle;
+  const classificationError = new Error("invalid operation");
+  const settlements: Array<[number, string]> = [];
+  let badClassifications = 0;
+  f.options.classify = (operation) => {
+    if (jsonObject(operation) && operation.update_id === 1) {
+      badClassifications++;
+      throw classificationError;
+    }
+    return classify(operation);
+  };
+  f.options.settle = async (entry, outcome) => {
+    settlements.push([entry.updateId, outcome]);
+    await settle(entry, outcome);
+  };
+  const ingress = new UpdateIngress(f.options);
+  const running = ingress.run();
+  try {
+    await until(() => settlements.length === 3);
+    await until(() => ingress.diagnostics().active === 0);
+    assert.deepEqual(f.handled, [update(2), update(3)]);
+    assert.deepEqual(settlements, [
+      [1, "failed"],
+      [2, "completed"],
+      [3, "completed"],
+    ]);
+    assert.equal(badClassifications, 1);
+    assert.deepEqual(f.errors, [classificationError]);
+    assert.equal(ingress.diagnostics().errorCount, 1);
+    assert.deepEqual(await f.inbox.pending(), []);
+  } finally {
+    f.controller.abort();
+    await running;
+    await ingress.drain();
+  }
+});
+
+test("classifier failure settlement owns a bounded slot and remains tracked through abort and drain", async () => {
+  const f = fixture();
+  for (let id = 1; id <= 3; id++) await f.options.admit(update(id));
+  const blocked = gate();
+  const settle = f.options.settle;
+  const settlements: Array<[number, string]> = [];
+  f.options.classify = () => {
+    throw new Error("invalid operation");
+  };
+  f.options.settle = async (entry, outcome) => {
+    settlements.push([entry.updateId, outcome]);
+    await blocked.promise;
+    await settle(entry, outcome);
+  };
+  const ingress = new UpdateIngress(f.options);
+  const running = ingress.run();
+  try {
+    await until(() => settlements.length === 1);
+    // Observe multiple refills while settlement is blocked.
+    let scans = 0;
+    const pending = f.options.pending;
+    f.options.pending = async () => {
+      scans++;
+      return pending();
+    };
+    await until(() => scans >= 3);
+    assert.equal(ingress.diagnostics().active, 1);
+    assert.equal(ingress.diagnostics().normalActive, 1);
+    assert.deepEqual(settlements, [[1, "failed"]]);
+    assert.deepEqual(f.handled, []);
+    f.controller.abort();
+    await running;
+    let drained = false;
+    const draining = ingress.drain().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    assert.equal(drained, false);
+    blocked.release();
+    await draining;
+    assert.deepEqual(settlements, [[1, "failed"]]);
+    assert.equal(ingress.diagnostics().active, 0);
+  } finally {
+    f.controller.abort();
+    blocked.release();
+    await running;
+    await ingress.drain();
+  }
+});
+
+test("classifier failure settlement failure halts ingress without replay or handler execution", async () => {
+  const f = fixture();
+  await f.options.admit(update(1));
+  await f.options.admit(update(2));
+  const classify = f.options.classify;
+  const classificationError = new Error("invalid operation");
+  const settlementError = new Error("storage unavailable");
+  const settlements: Array<[number, string]> = [];
+  f.options.classify = (operation) => {
+    if (jsonObject(operation) && operation.update_id === 1)
+      throw classificationError;
+    return classify(operation);
+  };
+  f.options.settle = async (entry, outcome) => {
+    settlements.push([entry.updateId, outcome]);
+    throw settlementError;
+  };
+  const ingress = new UpdateIngress(f.options);
+  const running = ingress.run();
+  try {
+    // A settlement failure must stop polling too, without external abort.
+    await running;
+    await ingress.drain();
+    assert.equal(ingress.diagnostics().halted, true);
+    assert.deepEqual(f.errors, [classificationError, settlementError]);
+    assert.equal(ingress.diagnostics().errorCount, 2);
+    assert.deepEqual(settlements, [[1, "failed"]]);
+    assert.deepEqual(f.handled, []);
+    assert.deepEqual(
+      (await f.inbox.pending()).map((entry) => entry.updateId),
+      [1, 2],
+    );
+  } finally {
+    f.controller.abort();
+    await running;
+    await ingress.drain();
+  }
+});
+
 test("settlement failure stops dispatch instead of re-executing ambiguous work", async () => {
   const f = fixture();
   await f.options.admit(update(1));

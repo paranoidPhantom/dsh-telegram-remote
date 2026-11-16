@@ -43,6 +43,7 @@ export class UpdateIngress {
   private halted = false;
   private started = false;
   private unresolved = 0;
+  private errorCount = 0;
 
   /** Last observed Host backlog; not a second queue or an admission guarantee. */
   diagnostics() {
@@ -52,6 +53,7 @@ export class UpdateIngress {
       priorityActive: this.priority ? 1 : 0,
       pending: Math.max(0, this.unresolved - this.active.size),
       halted: this.halted,
+      errorCount: this.errorCount,
     };
   }
   private readonly polling = new AbortController();
@@ -91,6 +93,7 @@ export class UpdateIngress {
   }
 
   private report(error: unknown): void {
+    this.errorCount = Math.min(Number.MAX_SAFE_INTEGER, this.errorCount + 1);
     // A diagnostics callback must not create unhandled rejections or turn a
     // settled operation into another execution attempt.
     try {
@@ -141,24 +144,35 @@ export class UpdateIngress {
         for (const entry of entries) {
           if (this.options.signal.aborted || this.halted) break;
           if (this.active.has(entry.updateId)) continue;
-          const route = this.options.classify(entry.operation);
+          let route: ReturnType<UpdateIngressOptions["classify"]> | undefined;
+          let classificationError: unknown;
+          try {
+            route = this.options.classify(entry.operation);
+          } catch (error: unknown) {
+            // A poison entry must not prevent scanning later inbox entries.
+            classificationError = error;
+          }
           if (
-            route.priority
+            route?.priority
               ? this.priority
-              : this.normal >= this.maxActive || this.keys.has(route.key)
+              : this.normal >= this.maxActive ||
+                (route !== undefined && this.keys.has(route.key))
           )
             continue;
-          if (route.priority) this.priority = true;
+          if (route?.priority) this.priority = true;
           else {
+            // Failed classification still owns a bounded normal slot until its
+            // failed settlement commits, but has no trustworthy topic key.
             this.normal++;
-            this.keys.add(route.key);
+            if (route) this.keys.add(route.key);
           }
-          const task = this.execute(entry).finally(() => {
+          if (!route) this.report(classificationError);
+          const task = this.execute(entry, route !== undefined).finally(() => {
             this.active.delete(entry.updateId);
-            if (route.priority) this.priority = false;
+            if (route?.priority) this.priority = false;
             else {
               this.normal--;
-              this.keys.delete(route.key);
+              if (route) this.keys.delete(route.key);
             }
           });
           this.active.set(entry.updateId, task);
@@ -170,16 +184,18 @@ export class UpdateIngress {
     }
   }
 
-  private async execute(entry: InboxEntry): Promise<void> {
-    let outcome: InboxOutcome = "completed";
-    try {
-      await this.options.handle(entry.operation, this.options.signal);
-    } catch (error: unknown) {
-      outcome = "failed";
-      this.report(error);
+  private async execute(entry: InboxEntry, classified: boolean): Promise<void> {
+    let outcome: InboxOutcome = classified ? "completed" : "failed";
+    if (classified) {
+      try {
+        await this.options.handle(entry.operation, this.options.signal);
+      } catch (error: unknown) {
+        outcome = "failed";
+        this.report(error);
+      }
+      // Cancellation is ambiguous only when a handler may have executed.
+      if (this.options.signal.aborted) outcome = "uncertain";
     }
-    // Cancellation is ambiguous, not a successful execution acknowledgement.
-    if (this.options.signal.aborted) outcome = "uncertain";
     try {
       await this.options.settle(entry, outcome);
     } catch (error: unknown) {

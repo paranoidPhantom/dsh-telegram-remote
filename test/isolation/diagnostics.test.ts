@@ -46,6 +46,7 @@ test("ingress exposes aggregate active and last-observed pending counts only", a
       priorityActive: 0,
       pending: 1,
       halted: false,
+      errorCount: 0,
     });
   } finally {
     controller.abort();

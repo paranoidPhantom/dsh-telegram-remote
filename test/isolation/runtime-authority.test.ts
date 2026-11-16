@@ -391,7 +391,7 @@ test(
       id: number,
       chatId: number,
       thread: number,
-      draft: number,
+      draft: number | string,
       type = "private",
     ): JsonValue => ({
       update_id: id,
@@ -409,7 +409,9 @@ test(
       f.bridgeCalls.filter((call) => call.method === "stop"),
       [],
     );
-    await f.dispatch(stopped(14, ownerId, threadId, draftId));
+    // Actual Telegram native Stop updates use a decimal string (including IDs
+    // above signed 32-bit); normalize before classification and authorization.
+    await f.dispatch(stopped(14, ownerId, threadId, String(draftId)));
     assert.deepEqual(
       f.bridgeCalls.filter((call) => call.method === "stop"),
       [{ method: "stop", args: ["s"] }],

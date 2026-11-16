@@ -17,6 +17,8 @@ export const runtimeDiagnosticsSchema = z.object({
       priorityActive: count,
       pending: count,
       halted: z.boolean(),
+      // Backward compatible with child builds predating content-free errors.
+      errorCount: count.optional(),
     })
     .nullable(),
   outbound: z.object({

@@ -86,7 +86,11 @@ const updateSchema = z.object({
     .object({
       chat: z.object({ id: z.number().int(), type: z.string() }),
       message_thread_id: z.number().int().optional(),
-      draft_id: z.number().int(),
+      // Telegram emits native stop draft IDs as decimal strings as well as
+      // numbers. Normalize only that wire representation, never broad coercion.
+      draft_id: z
+        .union([z.number(), z.string().regex(/^[0-9]+$/).transform(Number)])
+        .pipe(z.number().int().positive().max(Number.MAX_SAFE_INTEGER)),
     })
     .optional(),
 });
