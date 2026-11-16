@@ -62,6 +62,7 @@ function fixture(t: TestContext) {
   ]);
   const bridgeCalls: Array<{ method: string; args: JsonValue }> = [];
   const bridge: ConsoleBridge = {
+    workspaces: async () => [],
     list: async () => {
       bridgeCalls.push({ method: "list", args: [] });
       return [{ id: "s", title: "Host session" }];

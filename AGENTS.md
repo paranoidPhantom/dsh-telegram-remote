@@ -67,14 +67,14 @@ Session projections are pure JSON folds; preserve reference identity for irrelev
 - `/new` / New session uses the same owner-only model confirmation, then supplies a topic link. DSH owns defaults and selection; no bot-side preferred model. Native DSH model changes apply at the **next step boundary**, not necessarily the next turn.
 - Model/provider picker edits the **same message** and marks the DSH-confirmed provider/model with ✓. No separate acknowledgement messages; preserve the previous selection and show an inline failure when rejected. Serialize mutations without recursively entering the same session queue.
 - End topic confirms deletion of the Telegram topic/history only. Never delete or stop the DSH session. Closed mappings remain tombstoned; late events must not revive them. Explicit reopening is allowed.
-- General controls move to the latest message. Keep Model / Details / End topic and touched-file buttons on the final answer. Do not clear that toolbar in preview cleanup. Pending approval decisions retain their buttons until settled.
+- General controls move to the latest message. Keep Model / End topic and touched-file buttons on the final answer. Session diagnostics and directory live in the pinned initialization card, not a Details button. Do not clear the final toolbar in preview cleanup. Pending approval decisions retain their buttons until settled; settled cards retain the reviewed operation and remove decision buttons.
 - Authorize every callback against the configured owner, private chat, topic, expiry, and exact operation. Callback actions grant authority; the agent must never approve its own calls.
 - Steer now promotes the **exact original queued request** via DSH `updateQueue({action:{kind:'steer'}})`; never submit duplicate text.
 
 ### Streaming, logs, and delivery
 - Use native `sendMessageDraft` with stable nonzero draft IDs and `can_stop: true`. Validate native stopped-generation updates against chat/topic/current draft. Custom Stop is a fallback only when drafts are unsupported.
 - Empty draft placeholder is **`Deep diving`**, without ellipsis (localized equivalents apply).
-- Latest tool call lives in the draft, with custom emoji `5220046725493828505`. Move it into the collapsed log when another tool/text replaces it or the turn ends. Do not dump read-file contents. Keep workspace-relative paths monospace in both drafts and logs.
+- Latest tool call lives in the draft. `toolNameRules` in plugin config selects per-tool plain/custom emoji consistently in drafts, call formatting and logs (ordered case-insensitive `*` globs against full/normalized names); unmatched tools retain 🔧 / custom emoji `5220046725493828505`. Logs have no ordered numbering or working/finished title. Move the latest call into the collapsed log when another tool/text replaces it or the turn ends. Do not dump read-file contents. Keep workspace-relative paths monospace in both drafts and logs.
 - Each completed normal assistant message becomes durable output immediately. Seal the preceding tool-log segment above it; later tools start a new log below it. Preserve all prior messages and stopped partial text; deduplicate committed outputs/finals.
 - Persist accepted Telegram message IDs before cosmetic toolbar/log updates. Never replay an ambiguous send blindly; inspect pending receipts rather than claiming success. Transport errors and Telegram rejection are not interchangeable.
 - Telegram HTML must escape untrusted data; entity offsets/lengths are UTF-16, including astral emoji. Local Markdown file references become monospace labels, not clickable local-path links. External HTTP(S) links remain links. Keep chunk boundaries and tags valid.
@@ -92,6 +92,19 @@ Session projections are pure JSON folds; preserve reference identity for irrelev
 - Final file buttons use exact recorded turn/path allowlists. Added/removed/edited emoji IDs are in `src/bot/console.ts`. Removed files require authoritative full pre-deletion bytes; never reconstruct arbitrary missing files from incomplete hunks. Current historical downloads are confined to the recorded/header workspace and can reject switched-workspace paths.
 - Widgets use guarded bounded resource fetching, private-IP/redirect/DNS checks, deterministic compilation, and compiled-hash deduplication. Limits: 32 KiB raw HTML and 4 KiB zlib-9. Replacement sends first, deletes old second. Queries are disabled.
 - **Do not promise production widget availability.** Telegram has rejected general bots with `INPUT_MEDIA_WIDGET_NOT_ALLOWED` despite older docs claiming private-chat support. Treat this as server eligibility, not invalid HTML; preserve the source-document fallback. Consult current upstream status before changing behavior.
+
+## Tool icon configuration
+
+Set `toolNameRules` in the plugin's DSH config and reload the plugin (not the credential Settings form). The first matching rule wins. `pattern` is a case-insensitive glob with only `*` special; it matches the full tool name or the final namespace/MCP component (`functions.read`, `fs/read`, and `mcp__fs__read` normalize to `read`). Unmatched tools retain 🔧 and Telegram custom emoji `5220046725493828505`. A matched rule may set `emoji` (fallback text, default 🔧) and `customEmojiId` (decimal string); omitting the ID uses plain text. Maximum 100 rules, 200 characters per pattern and 32 UTF-16 units per fallback emoji. Tool identifiers and summaries remain escaped text; rules cannot inject markup. This shared matcher also classifies file mutations for compact log detail filtering.
+
+```yaml
+toolNameRules:
+  - pattern: 'read*'
+    emoji: '📖'
+    customEmojiId: '5220046725493828505' # replace with the desired Telegram emoji ID
+  - pattern: '*'
+    emoji: '🔧' # plain fallback for all other tools
+```
 
 ## Localization and documentation
 

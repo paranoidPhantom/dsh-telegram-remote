@@ -93,11 +93,19 @@ export class ConsolePicker {
       effort: pending.model.reasoningEffort
         ? ` · ${pending.model.reasoningEffort}`
         : "",
+      workspace: pending.workspace
+        ? `${pending.workspace.title} · ${pending.workspace.path}`
+        : this.t("workspaceDefault"),
       hint: this.t(pending.native ? "nativeNewHint" : "newHint"),
     });
   }
   pendingControls(pending: PendingInitiation, ctx: TopicContext) {
     return [
+      this.console.button(this.t("workspace"), ctx, {
+        type: "new-workspaces",
+        pending,
+        page: 0,
+      }),
       this.console.button(this.t("confirmNew"), ctx, {
         type: "new-confirm",
         pending,

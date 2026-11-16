@@ -14,11 +14,12 @@ function safe(html: string, limit: number) {
   const stack: string[] = [];
   for (let i = 0; i < html.length;) {
     if (html[i] === "<") {
-      const tag = /^(<\/?(?:b|code|pre|blockquote)(?: expandable)?>)/.exec(
-        html.slice(i),
-      );
+      const tag =
+        /^(<\/?(?:b|code|pre|blockquote|tg-emoji)(?: expandable| emoji-id="\d+")?>)/.exec(
+          html.slice(i),
+        );
       assert.ok(tag, `bad markup: ${html.slice(i, i + 80)}`);
-      const nameMatch = /^<\/?(\w+)/.exec(tag[0]);
+      const nameMatch = /^<\/?([\w-]+)/.exec(tag[0]);
       assert.ok(nameMatch?.[1]);
       const name = nameMatch[1];
       if (tag[0][1] === "/") assert.equal(stack.pop(), name);

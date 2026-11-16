@@ -38,7 +38,8 @@ export function consoleBridge(bridge: Bridge): ConsoleBridge {
         running: result.appliesAtNextStep,
       };
     },
-    create: () => bridge.create(),
+    workspaces: () => bridge.workspaces(),
+    create: (workspaceId) => bridge.create(workspaceId),
     newSessionSelection: (id) => bridge.newSessionSelection(id),
     prompt: (id, text, requestId) => bridge.prompt(id, text, requestId),
     stop: (id) => bridge.stop(id),

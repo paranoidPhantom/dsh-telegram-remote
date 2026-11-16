@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { toolNameRulesSchema } from "../rendering/tool-name.js";
 import { z } from "zod";
 import { TelegramConsole } from "../bot/console.js";
 import type { TelegramApiPort } from "../bot/contracts.js";
@@ -16,6 +17,7 @@ const initializeSchema = z.object({
   ownerEpoch: z.number().int().nonnegative(),
   locale: z.string(),
   version: z.string(),
+  toolNameRules: toolNameRulesSchema.optional(),
 });
 const runSchema = z.object({
   turn: z.union([z.string(), z.number().finite()]),
@@ -341,6 +343,7 @@ export class ChildRuntime {
       ownerId: this.settings.ownerId,
       signal: this.controller.signal,
       getLocale: () => this.settings?.locale,
+      toolNameRules: this.settings.toolNameRules,
     });
     this.surface.runtimeVersion = this.settings.version;
     this.surface.runtimePid = process.ppid;

@@ -12,6 +12,7 @@ function fixture() {
   ]);
   let calls = 0;
   const bridge: ConsoleBridge = {
+    workspaces: async () => [],
     list: async () => [],
     metadata: async () => ({}),
     models: async () => [],
@@ -273,4 +274,44 @@ test("credentials require current generation and closed services are fenced", as
   await assert.rejects(
     f.invoke("credentials.read", { ownerEpoch: 1, generation: "g1" }),
   );
+});
+
+test("workspace catalog and creation remain owner-fenced and registered-ID only", async () => {
+  const f = fixture();
+  f.options.bridge.workspaces = async () => [
+    { id: "registered", title: "Project", path: "/workspace" },
+  ];
+  let selected: string | undefined;
+  f.options.bridge.create = async (workspaceId) => {
+    selected = workspaceId;
+    return "new";
+  };
+  const p = {
+    ownerEpoch: 1,
+    actor: f.actor,
+    confirmed: true,
+    operationId: "workspace-create",
+  };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await f.invoke("bridge.workspaces", p))),
+    [{ id: "registered", title: "Project", path: "/workspace" }],
+  );
+  await assert.rejects(
+    f.invoke("bridge.workspaces", { ...p, actor: { ...f.actor, ownerId: 8 } }),
+  );
+  await assert.rejects(
+    f.invoke("bridge.create", { ...p, workspaceId: "/arbitrary/path" }),
+  );
+  await assert.rejects(
+    f.invoke("bridge.create", {
+      ...p,
+      workspaceId: "registered",
+      confirmed: false,
+    }),
+  );
+  assert.equal(
+    await f.invoke("bridge.create", { ...p, workspaceId: "registered" }),
+    "new",
+  );
+  assert.equal(selected, "registered");
 });

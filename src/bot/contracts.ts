@@ -1,4 +1,5 @@
 import type { Translator } from "../i18n/bot-i18n.js";
+import type { ToolNameRule } from "../rendering/tool-name.js";
 import type {
   SessionMetadata as RenderMetadata,
   ToolLogEntry,
@@ -41,6 +42,11 @@ export interface SessionMetadata extends RenderMetadata {
 }
 export interface SessionListEntry extends SessionMetadata {
   id: SessionId;
+}
+export interface WorkspaceEntry {
+  id: string;
+  title: string;
+  path: string;
 }
 export interface ModelEntry {
   provider: string;
@@ -127,7 +133,7 @@ export interface InlineButton {
   text: string;
   callback_data?: string;
   url?: string;
-  style?: "primary" | "danger";
+  style?: "primary" | "success" | "danger";
   icon_custom_emoji_id?: string;
 }
 export interface InlineMarkup {
@@ -198,7 +204,8 @@ export interface ConsoleBridge {
     id: SessionId,
     selection: ModelSelection,
   ): Promise<SelectionReceipt | null | undefined>;
-  create(): Promise<SessionId>;
+  workspaces(): Promise<WorkspaceEntry[]>;
+  create(workspaceId?: string): Promise<SessionId>;
   newSessionSelection(
     source?: SessionId,
   ): Promise<ModelSelection | null | undefined>;
@@ -219,6 +226,7 @@ export interface NativePrompt {
 export interface PendingInitiation {
   ctx: TopicContext;
   model: ModelSelection;
+  workspace?: WorkspaceEntry;
   native: boolean;
   prompts: NativePrompt[];
   expires: number;
@@ -260,6 +268,13 @@ export type NavigationAction =
 export type ConsoleAction =
   | { type: "new" }
   | { type: "new-confirm" | "new-cancel"; pending: PendingInitiation }
+  | { type: "new-workspaces"; pending: PendingInitiation; page: number }
+  | {
+      type: "new-workspace";
+      pending: PendingInitiation;
+      workspaceId?: string;
+      page: number;
+    }
   | { type: "new-providers"; pending: PendingInitiation; page: number }
   | {
       type: "new-models";
@@ -275,7 +290,7 @@ export type ConsoleAction =
       page?: number;
     }
   | {
-      type: "close" | "close-cancel" | "open" | "refresh" | "stop" | "details";
+      type: "close" | "close-cancel" | "open" | "refresh" | "stop";
       id: SessionId;
     }
   | { type: "close-confirm"; id: SessionId; targetThreadId: number }
@@ -302,7 +317,14 @@ export type StoredAction = ConsoleAction & TopicContext & { expires: number };
 export type SelectAction = Extract<ConsoleAction, { type: "select" }>;
 export type PendingPickerAction = Extract<
   ConsoleAction,
-  { type: "new-providers" | "new-models" | "new-select" }
+  {
+    type:
+      | "new-providers"
+      | "new-models"
+      | "new-select"
+      | "new-workspaces"
+      | "new-workspace";
+  }
 >;
 export type CloseAction = Pick<
   Extract<ConsoleAction, { type: "close-confirm" }>,
@@ -385,6 +407,7 @@ export interface SessionActionsPort extends MessagePort, QueuePort {
   readonly bridge: Pick<
     ConsoleBridge,
     | "prompt"
+    | "workspaces"
     | "newSessionSelection"
     | "create"
     | "selectModel"
@@ -424,6 +447,7 @@ export interface SessionActionsPort extends MessagePort, QueuePort {
   ): Promise<unknown>;
 }
 export interface DeliveryPort extends QueuePort {
+  readonly toolNameRules?: readonly ToolNameRule[];
   readonly api: TelegramApiPort;
   readonly store: ConsoleStore;
   readonly t: Translator;

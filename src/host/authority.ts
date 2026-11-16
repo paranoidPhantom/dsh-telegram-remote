@@ -112,7 +112,7 @@ export class HostAuthority {
       };
     };
     const bridge = this.options.bridge;
-    for (const name of ["list", "models"] as const)
+    for (const name of ["list", "models", "workspaces"] as const)
       add(`bridge.${name}`, async (p) => {
         this.actor(p);
         return wireValue(await bridge[name]());
@@ -127,6 +127,15 @@ export class HostAuthority {
     add("bridge.create", async (p) => {
       this.actor(p);
       if (p.confirmed !== true) deny();
+      const workspaceId =
+        p.workspaceId === undefined
+          ? undefined
+          : string(p.workspaceId, "workspaceId");
+      if (
+        workspaceId !== undefined &&
+        !(await bridge.workspaces()).some((w) => w.id === workspaceId)
+      )
+        deny();
       const id = await this.journal.execute(
         {
           id: string(p.operationId, "operationId"),
@@ -136,7 +145,7 @@ export class HostAuthority {
         },
         async () => {
           this.fence(p);
-          return bridge.create();
+          return bridge.create(workspaceId);
         },
       );
       this.fence(p);

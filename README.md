@@ -11,7 +11,7 @@ Control DeepSeek Harness from a private Telegram bot, built around **Telegram th
 - **Threads by design:** each DSH session has its own private-chat topic. Open existing sessions on demand or start one with Telegram’s native **New Topic** action.
 - **Native streaming:** animated draft replies, Telegram’s Stop button, live tool previews, and typing indicators. Completed messages and stopped partial answers stay in the chat.
 - **Built for tool-heavy work:** compact, collapsed tool logs; updates coalesced per session; only changed log pages are edited; independent draft/edit scheduling across topics with flood-control backoff.
-- **Controls where you work:** interactive approvals, an in-place model picker, queue steering, and native photo/video/audio or document delivery.
+- **Controls where you work:** informative approvals with colored buttons, in-place model and existing-workspace selection for new sessions, pinned session details, queue steering, and native photo/video/audio or document delivery.
 
 ## Install
 

@@ -25,12 +25,22 @@ function fixture(t: TestContext) {
   let sentId = 0;
   const selection = { provider: "p", model: "m", reasoningEffort: "high" };
   const bridge: Bridge = {
+    async details() {
+      return "";
+    },
+    async workspaces() {
+      return Array.from({ length: 12 }, (_, i) => ({
+        id: `w${i}`,
+        title: `Project ${i}`,
+        path: `/workspace/${i}`,
+      }));
+    },
     async newSessionSelection(source) {
       bridgeCalls.push(["selection", source]);
       return selection;
     },
-    async create() {
-      bridgeCalls.push(["create"]);
+    async create(workspaceId) {
+      bridgeCalls.push(["create", workspaceId]);
       return "new";
     },
     async selectModel(...args) {
@@ -335,4 +345,69 @@ test("closed native topic explicitly reopens existing binding without new DSH se
     1,
   );
   assert.equal(f.bridgeCalls.filter((x) => x[0] === "create").length, 0);
+});
+
+test("workspace selection paginates in place, preserves model and queued native prompts", async (t) => {
+  const f = fixture(t);
+  await f.c.handleUpdate(f.msg("first", 33, 70));
+  const messageId = f.last().method === "sendMessage" ? 1 : 0;
+  const workspaceToken = f.token("Workspace");
+  await f.c.handleUpdate(f.cb(workspaceToken, 34));
+  await f.c.handleUpdate(f.cb(workspaceToken, 33, 123));
+  assert.equal(f.calls.filter((x) => x.method === "editMessageText").length, 0);
+  await f.c.handleUpdate(f.cb(workspaceToken, 33));
+  await f.c.handleUpdate(f.cb(f.token("Next"), 33));
+  await f.c.handleUpdate(f.cb(f.token("Project 11"), 33));
+  assert.match(requiredField(f.last().params.text), /Project 11/);
+  assert.ok(
+    inlineMarkup(f.last().params.reply_markup)
+      .inline_keyboard.flat()
+      .some((b) => b.text.startsWith("✓ Project 11")),
+  );
+  await f.c.handleUpdate(f.cb(f.token("Model"), 33));
+  assert.match(requiredField(f.last().params.text), /Project 11/);
+  assert.ok(
+    f.calls
+      .filter((x) => x.method === "editMessageText")
+      .every((x) => x.params.message_id === messageId),
+  );
+  await f.c.handleUpdate(f.msg("second", 33, 71));
+  assert.equal(
+    f.bridgeCalls.some((x) => x[0] === "create"),
+    false,
+  );
+  await f.c.handleUpdate(f.cb(f.token("Confirm"), 33));
+  assert.deepEqual(
+    f.bridgeCalls.find((x) => x[0] === "create"),
+    ["create", "w11"],
+  );
+  assert.deepEqual(
+    f.bridgeCalls.filter((x) => x[0] === "prompt").map((x) => x[3]),
+    [`telegram:${OWNER}:70`, `telegram:${OWNER}:71`],
+  );
+  assert.equal(
+    f.calls.some((x) => x.method === "createForumTopic"),
+    false,
+  );
+});
+test("removed workspace cannot create; default remains explicitly selectable", async (t) => {
+  const f = fixture(t);
+  await f.c.handleUpdate(f.msg("/new"));
+  await f.c.handleUpdate(f.cb(f.token("Workspace")));
+  await f.c.handleUpdate(f.cb(f.token("Project 0")));
+  f.bridge.workspaces = async () => [];
+  await f.c.handleUpdate(f.cb(f.token("Confirm")));
+  assert.equal(
+    f.bridgeCalls.some((x) => x[0] === "create"),
+    false,
+  );
+  assert.match(requiredField(f.last().params.text), /no longer available/);
+  await f.c.handleUpdate(f.msg("/new"));
+  await f.c.handleUpdate(f.cb(f.token("Workspace")));
+  await f.c.handleUpdate(f.cb(f.token("DSH default")));
+  await f.c.handleUpdate(f.cb(f.token("Confirm")));
+  assert.deepEqual(
+    f.bridgeCalls.find((x) => x[0] === "create"),
+    ["create", undefined],
+  );
 });

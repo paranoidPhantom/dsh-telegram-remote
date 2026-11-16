@@ -1,4 +1,9 @@
 import { relativePathText } from "./path-display.js";
+import {
+  matchToolName,
+  toolEmojiHtml,
+  type ToolNameRule,
+} from "./tool-name.js";
 import { createTranslator, type Translator } from "../i18n/bot-i18n.js";
 const english = createTranslator(() => "en");
 
@@ -144,9 +149,10 @@ export function compactSession(
  * limit even when tool output consists entirely of reserved HTML characters. */
 export function toolLogPages(
   entries: readonly ToolLogEntry[] = [],
-  final = false,
+  _final = false,
   cwd?: string,
   t: Translator = english,
+  rules?: readonly ToolNameRule[],
 ): string[] {
   if (!entries.length) return [];
   const icons: Readonly<Record<string, string>> = {
@@ -161,19 +167,12 @@ export function toolLogPages(
       text.length > limit ? `${cut(text, limit)}… [truncated]` : text,
     );
   };
-  const rows = entries.map((tool, index) => {
+  const rows = entries.map((tool) => {
     const status = tool.status || "running";
     const summary = tool.summary
       ? ` — <code>${preview(relativePathText(tool.summary, cwd), 120)}</code>`
       : "";
-    const name =
-      String(tool.name || "")
-        .split(/[.:/]/)
-        .pop()
-        ?.toLowerCase() ?? "";
-    const isChange = /^(write|edit|apply_patch|write_file|edit_file)$/.test(
-      name,
-    );
+    const { isChange } = matchToolName(tool.name, rules);
     // Read/search/command payloads are deliberately absent from the chat log.
     const detail =
       isChange &&
@@ -181,7 +180,7 @@ export function toolLogPages(
       /Changes|diff|Replace|With/.test(tool.resultHtml)
         ? `\n${tool.resultHtml}`
         : "";
-    return `${index + 1}. ${icons[status] || "•"} ${preview(tool.name || "Tool", 70)} · ${html(t(status))}${summary}${detail}`;
+    return `${toolEmojiHtml(tool.name, rules)} ${icons[status] || "•"} ${preview(tool.name || "Tool", 70)} · ${html(t(status))}${summary}${detail}`;
   });
   const pages: string[] = [];
   let page = "";
@@ -193,8 +192,5 @@ export function toolLogPages(
     page += `${page ? "\n" : ""}${row}`;
   }
   if (page) pages.push(page);
-  return pages.map(
-    (body, index) =>
-      `<blockquote expandable>${html(t("tools"))} · ${html(t(final ? "finished" : "working"))}${pages.length > 1 ? ` · ${index + 1}/${pages.length}` : ""}\n${body}</blockquote>`,
-  );
+  return pages.map((body) => `<blockquote expandable>${body}</blockquote>`);
 }
