@@ -1,3 +1,5 @@
+<img src="icon.svg" width="150">
+
 # Удалённый доступ через Telegram
 
 [![npm](https://img.shields.io/npm/v/dsh-telegram-remote?style=flat-square&logo=npm&logoColor=white&label=npm)](https://www.npmjs.com/package/dsh-telegram-remote)
