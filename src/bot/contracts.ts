@@ -254,10 +254,26 @@ export interface PendingApproval {
 export type NavigationAction =
   | { type: "sessions" }
   | { type: "providers"; id: SessionId; picker?: boolean }
-  | { type: "models"; id: SessionId; provider: string };
+  | { type: "models"; id: SessionId; provider: string }
+  | { type: "new-providers"; pending: PendingInitiation }
+  | { type: "new-models"; pending: PendingInitiation; provider: string };
 export type ConsoleAction =
   | { type: "new" }
   | { type: "new-confirm" | "new-cancel"; pending: PendingInitiation }
+  | { type: "new-providers"; pending: PendingInitiation; page: number }
+  | {
+      type: "new-models";
+      pending: PendingInitiation;
+      provider: string;
+      page: number;
+    }
+  | {
+      type: "new-select";
+      pending: PendingInitiation;
+      provider: string;
+      model: string;
+      page?: number;
+    }
   | {
       type: "close" | "close-cancel" | "open" | "refresh" | "stop" | "details";
       id: SessionId;
@@ -284,6 +300,10 @@ export type ConsoleAction =
   | { type: "approve" | "deny"; pending: PendingApproval };
 export type StoredAction = ConsoleAction & TopicContext & { expires: number };
 export type SelectAction = Extract<ConsoleAction, { type: "select" }>;
+export type PendingPickerAction = Extract<
+  ConsoleAction,
+  { type: "new-providers" | "new-models" | "new-select" }
+>;
 export type CloseAction = Pick<
   Extract<ConsoleAction, { type: "close-confirm" }>,
   "id" | "targetThreadId"
@@ -364,7 +384,12 @@ export interface PickerPort extends MessagePort, QueuePort {
 export interface SessionActionsPort extends MessagePort, QueuePort {
   readonly bridge: Pick<
     ConsoleBridge,
-    "prompt" | "newSessionSelection" | "create" | "selectModel" | "metadata"
+    | "prompt"
+    | "newSessionSelection"
+    | "create"
+    | "selectModel"
+    | "metadata"
+    | "models"
   >;
   readonly api: Pick<TelegramApiPort, "call">;
   readonly store: ConsoleStore;
@@ -382,6 +407,21 @@ export interface SessionActionsPort extends MessagePort, QueuePort {
     metadata: SessionMetadata | null | undefined,
   ): Promise<void>;
   open(id: SessionId, ctx: TopicContext): Promise<TopicBinding | undefined>;
+  providers(
+    target: SessionId | PendingInitiation,
+    ctx: TopicContext,
+    page?: number,
+    messageId?: number,
+  ): Promise<unknown>;
+  models(
+    target: SessionId | PendingInitiation,
+    ctx: TopicContext,
+    provider: string,
+    page?: number,
+    messageId?: number,
+    notice?: string,
+    metadata?: SessionMetadata | null,
+  ): Promise<unknown>;
 }
 export interface DeliveryPort extends QueuePort {
   readonly api: TelegramApiPort;

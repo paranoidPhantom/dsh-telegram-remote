@@ -2,6 +2,38 @@ import { TOPIC_MODE_HELP, TOPIC_TUTORIAL } from "./topic-mode.js";
 
 /** Only plugin-owned UI copy belongs here. Never translate model/tool/backend data. */
 const messages = {
+  commandStart: ["Open sessions", "打开会话列表", "Открыть список сессий"],
+  commandSessions: ["List DSH sessions", "列出 DSH 会话", "Список сессий DSH"],
+  commandNew: [
+    "Choose a model and create a session",
+    "选择模型并创建会话",
+    "Выбрать модель и создать сессию",
+  ],
+  commandStatus: [
+    "Show this topic's session status",
+    "查看此话题的会话状态",
+    "Состояние сессии этой темы",
+  ],
+  commandStop: [
+    "Stop this topic's active response",
+    "停止此话题的当前回答",
+    "Остановить текущий ответ в этой теме",
+  ],
+  commandFiles: [
+    "Get this session's files",
+    "获取此会话的文件",
+    "Получить файлы сессии",
+  ],
+  commandVersion: [
+    "Show bot version and runtime identity",
+    "查看机器人版本和运行实例",
+    "Версия бота и сведения о процессе",
+  ],
+  commandHelp: [
+    "Show available commands",
+    "查看可用命令",
+    "Показать доступные команды",
+  ],
   stop: ["⏹ Stop", "⏹ 停止", "⏹ Остановить"],
   model: ["Model", "模型", "Модель"],
   details: ["Details", "详情", "Подробности"],
@@ -225,9 +257,9 @@ const messages = {
     "Создать сессию DSH с {provider} / {model}{effort}?{hint}",
   ],
   nativeNewHint: [
-    "\nYour messages wait here until you confirm.",
-    "\n确认之前，您的消息将在此等待。",
-    "\nВаши сообщения будут ждать здесь до подтверждения.",
+    "\nChoose a model, then confirm. Your messages wait here. Cancel deletes this topic and its history.",
+    "\n请选择模型后确认。您的消息将在此等待。取消将删除此话题及其历史记录。",
+    "\nВыберите модель и подтвердите. Ваши сообщения будут ждать здесь. Отмена удалит эту тему и её историю.",
   ],
   newHint: [
     "\nAfter confirmation, open the new topic using its link.",

@@ -20,6 +20,8 @@ Credentials remain in DSH under `telegram-console/bot`. The child obtains the to
 
 `src/host/lease.ts` provides local filesystem exclusion keyed by Telegram bot identity. Initialization checks bot identity/webhook state and acquires the lease before polling. This is local exclusion, not a distributed lease across machines. Rotation and unload close the owned child before releasing exclusion or closing Host stores. IPC disconnect triggers child shutdown; parent-side termination escalates if graceful shutdown does not exit. Verify those paths in the installed runtime before claiming uninstall/restart cannot leave a poller.
 
+After acquiring the bot lease, the child refreshes the owner's chat-scoped Telegram command menu before polling. It replaces the language-neutral and en/zh/ru lists using the DSH-selected locale, and refreshes them on locale changes. Locked/unconfigured owners do not register commands. Menu registration failures are reported but do not disable polling; the next startup or locale change retries synchronization. Other pre-existing Telegram language-specific scopes are not managed.
+
 `src/protocol/` validates versioned JSON envelopes `{version,generation,id,type,payload}`, bounds serialization and RPC pending/queued capacity, supports cancellation/timeouts, and does not implicitly retry side effects. IPC acceptance, handler completion and Telegram acceptance are different events. Timeouts and lost IPC can leave a side effect uncertain even when the caller receives an error.
 
 ## Inbound admission and queue behavior

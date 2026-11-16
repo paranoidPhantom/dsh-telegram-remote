@@ -153,6 +153,8 @@ export class TelegramConsole {
       save: this.save.bind(this),
       card: this.card.bind(this),
       open: this.open.bind(this),
+      providers: this.providers.bind(this),
+      models: this.models.bind(this),
     });
     this.delivery = new RunDelivery({
       api,
@@ -596,7 +598,7 @@ export class TelegramConsole {
     }
     if (!action || action.expires <= Date.now()) {
       if (action) this.actions.delete(query.data || "");
-      if (action?.type === "new-confirm" || action?.type === "new-cancel") {
+      if (action && "pending" in action && "expires" in action.pending) {
         action.pending.expires = 0;
         await this.api.call("answerCallbackQuery", {
           callback_query_id: query.id,
@@ -628,6 +630,10 @@ export class TelegramConsole {
     switch (action.type) {
       case "new":
         return this.requestNew(ctx, message.message_id);
+      case "new-providers":
+      case "new-models":
+      case "new-select":
+        return this.sessionActions.pick(action, ctx, message.message_id);
       case "new-confirm":
         return this.sessionActions.confirm(
           action.pending,

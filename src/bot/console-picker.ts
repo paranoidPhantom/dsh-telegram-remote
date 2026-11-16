@@ -8,6 +8,7 @@ import type {
   NavigationAction,
   SelectAction,
   PickerPort,
+  PendingInitiation,
 } from "./contracts.js";
 import { PAGE, cut, label } from "../rendering/console-render.js";
 
@@ -85,14 +86,39 @@ export class ConsolePicker {
       rows,
     );
   }
+  pendingText(pending: PendingInitiation) {
+    return this.t("createSession", {
+      provider: pending.model.provider,
+      model: pending.model.model,
+      effort: pending.model.reasoningEffort
+        ? ` · ${pending.model.reasoningEffort}`
+        : "",
+      hint: this.t(pending.native ? "nativeNewHint" : "newHint"),
+    });
+  }
+  pendingControls(pending: PendingInitiation, ctx: TopicContext) {
+    return [
+      this.console.button(this.t("confirmNew"), ctx, {
+        type: "new-confirm",
+        pending,
+      }),
+      this.console.button(this.t("cancel"), ctx, {
+        type: "new-cancel",
+        pending,
+      }),
+    ];
+  }
   async providers(
-    id: SessionId,
+    target: SessionId | PendingInitiation,
     ctx: TopicContext,
     page = 0,
     messageId?: number,
   ) {
     const models = await this.console.bridge.models();
-    const metadata = await this.console.bridge.metadata(id);
+    const selection =
+      typeof target === "string"
+        ? (await this.console.bridge.metadata(target))?.selection
+        : target.model;
     const providers = [...new Set(models.map((m) => m.provider))];
     page = Math.max(
       0,
@@ -102,26 +128,43 @@ export class ConsolePicker {
       .slice(page * PAGE, (page + 1) * PAGE)
       .map((provider) => [
         this.console.button(
-          `${metadata?.selection?.provider === provider ? "✓ " : ""}${provider}`,
+          `${selection?.provider === provider ? "✓ " : ""}${provider}`,
           ctx,
-          { type: "models", id, provider, page: 0 },
+          typeof target === "string"
+            ? { type: "models", id: target, provider, page: 0 }
+            : { type: "new-models", pending: target, provider, page: 0 },
         ),
       ]);
     rows.push(
-      ...this.console.navigation(ctx, page, providers.length, {
-        type: "providers",
-        id,
-        picker: true,
-      }),
+      ...this.console.navigation(
+        ctx,
+        page,
+        providers.length,
+        typeof target === "string"
+          ? { type: "providers", id: target, picker: true }
+          : { type: "new-providers", pending: target },
+      ),
     );
-    if (this.console.draftsUnsupported && (await this.console.running(id)))
+    if (typeof target !== "string")
+      rows.push(this.pendingControls(target, ctx));
+    else if (
+      this.console.draftsUnsupported &&
+      (await this.console.running(target))
+    )
       rows.push([
-        this.console.button(this.t("stop"), ctx, { type: "stop", id }),
+        this.console.button(this.t("stop"), ctx, { type: "stop", id: target }),
       ]);
-    return this.console.page(ctx, messageId, this.t("chooseProvider"), rows);
+    return this.console.page(
+      ctx,
+      messageId,
+      typeof target === "string"
+        ? this.t("chooseProvider")
+        : `${this.pendingText(target)}\n\n${this.t("chooseProvider")}`,
+      rows,
+    );
   }
   async models(
-    id: SessionId,
+    target: SessionId | PendingInitiation,
     ctx: TopicContext,
     provider: string,
     page = 0,
@@ -129,7 +172,10 @@ export class ConsolePicker {
     notice = "",
     metadata?: SessionMetadata | null,
   ) {
-    metadata ??= await this.console.bridge.metadata(id);
+    if (typeof target === "string")
+      metadata ??= await this.console.bridge.metadata(target);
+    const selection =
+      typeof target === "string" ? metadata?.selection : target.model;
     const models = (await this.console.bridge.models()).filter(
       (m) => m.provider === provider,
     );
@@ -139,40 +185,58 @@ export class ConsolePicker {
     );
     const visible = models.slice(page * PAGE, (page + 1) * PAGE);
     const selected = (m: ModelEntry) =>
-      metadata?.selection?.provider === provider &&
-      metadata?.selection?.model === m.id;
+      selection?.provider === provider && selection?.model === m.id;
     const rows = visible.map((m) => [
-      this.console.button(`${selected(m) ? "✓ " : ""}${m.name || m.id}`, ctx, {
-        type: "select",
-        id,
-        provider,
-        model: m.id,
-        page,
-      }),
+      this.console.button(
+        `${selected(m) ? "✓ " : ""}${m.name || m.id}`,
+        ctx,
+        typeof target === "string"
+          ? { type: "select", id: target, provider, model: m.id, page }
+          : {
+              type: "new-select",
+              pending: target,
+              provider,
+              model: m.id,
+              page,
+            },
+      ),
     ]);
     rows.push(
-      ...this.console.navigation(ctx, page, models.length, {
-        type: "models",
-        id,
-        provider,
-      }),
+      ...this.console.navigation(
+        ctx,
+        page,
+        models.length,
+        typeof target === "string"
+          ? { type: "models", id: target, provider }
+          : { type: "new-models", pending: target, provider },
+      ),
     );
     rows.push([
-      this.console.button(this.t("providers"), ctx, {
-        type: "providers",
-        id,
-        page: 0,
-        picker: true,
-      }),
-      ...(this.console.draftsUnsupported && (await this.console.running(id))
-        ? [this.console.button(this.t("stop"), ctx, { type: "stop", id })]
+      this.console.button(
+        this.t("providers"),
+        ctx,
+        typeof target === "string"
+          ? { type: "providers", id: target, page: 0, picker: true }
+          : { type: "new-providers", pending: target, page: 0 },
+      ),
+      ...(typeof target === "string" &&
+      this.console.draftsUnsupported &&
+      (await this.console.running(target))
+        ? [
+            this.console.button(this.t("stop"), ctx, {
+              type: "stop",
+              id: target,
+            }),
+          ]
         : []),
     ]);
+    if (typeof target !== "string")
+      rows.push(this.pendingControls(target, ctx));
     return this.console.page(
       ctx,
       messageId,
       cut(
-        `${this.t("modelsPage", { provider, page: page + 1 })}${notice ? `\n${notice}` : ""}\n${visible.map((m) => `${selected(m) ? "✓ " : ""}${m.name || m.id}${m.description ? ` — ${m.description}` : ""}`).join("\n")}`,
+        `${typeof target === "string" ? "" : `${this.pendingText(target)}\n\n`}${this.t("modelsPage", { provider, page: page + 1 })}${notice ? `\n${notice}` : ""}\n${visible.map((m) => `${selected(m) ? "✓ " : ""}${m.name || m.id}${m.description ? ` — ${m.description}` : ""}`).join("\n")}`,
       ),
       rows,
     );

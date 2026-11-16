@@ -22,6 +22,7 @@ function fixture(t: TestContext) {
     bridgeCalls: BridgeCall[] = [],
     data = new Map<string, State>();
   let n = 0;
+  let sentId = 0;
   const selection = { provider: "p", model: "m", reasoningEffort: "high" };
   const bridge: Bridge = {
     async newSessionSelection(source) {
@@ -48,12 +49,21 @@ function fixture(t: TestContext) {
     async list() {
       return [];
     },
+    async models() {
+      return [
+        { provider: "p", id: "m" },
+        ...Array.from({ length: 12 }, (_, i) => ({
+          provider: "q",
+          id: `other-${i}`,
+        })),
+      ];
+    },
   };
   const api = {
     async call(method: TelegramMethod, params: TelegramParams = {}) {
       calls.push({ method, params: params });
       return method === "sendMessage"
-        ? { message_id: ++n }
+        ? { message_id: (sentId = ++n) }
         : method === "createForumTopic"
           ? { message_thread_id: 500 }
           : true;
@@ -87,7 +97,12 @@ function fixture(t: TestContext) {
       text,
     },
   });
-  const cb = (token: string, thread = 0, owner = OWNER, messageId = 1) => ({
+  const cb = (
+    token: string,
+    thread = 0,
+    owner = OWNER,
+    messageId = sentId,
+  ) => ({
     callback_query: {
       id: String(++n),
       from: { id: owner },
@@ -100,7 +115,13 @@ function fixture(t: TestContext) {
     },
   });
   const last = () =>
-    required(calls.filter((x) => x.method === "sendMessage").at(-1));
+    required(
+      calls
+        .filter(
+          (x) => x.method === "sendMessage" || x.method === "editMessageText",
+        )
+        .at(-1),
+    );
   const token = (label: string) =>
     requiredField(
       inlineMarkup(last().params.reply_markup)
@@ -124,7 +145,7 @@ test("/new confirms snapshot exactly once and edits same confirmation with direc
     ["select", "new", { provider: "p", model: "m", reasoningEffort: "high" }],
   );
   const edit = f.calls.filter((x) => x.method === "editMessageText").at(-1)!;
-  assert.equal(edit.params.message_id, 1);
+  assert.equal(edit.params.message_id, 2);
   assert.equal(
     inlineMarkup(edit.params.reply_markup).inline_keyboard[0]![0]!.url,
     "https://t.me/Bot/500",
@@ -217,6 +238,93 @@ test("failed delete keeps mapping and delivery active", async (t) => {
   );
   assert.ok(await f.c.getTopic("new"));
   assert.equal(f.c.active.has("new"), true);
+});
+test("native rejection deletes only its topic, discards prompts and fences late events", async (t) => {
+  const f = fixture(t);
+  await f.c.handleUpdate(f.msg("first", 33, 70));
+  const confirm = f.token("Confirm");
+  const cancel = f.token("Cancel");
+  await f.c.handleUpdate(f.cb(cancel, 34));
+  await f.c.handleUpdate(f.cb(cancel, 33, 123));
+  assert.equal(
+    f.calls.some((c) => c.method === "deleteForumTopic"),
+    false,
+  );
+  await f.c.handleUpdate(f.cb(cancel, 33));
+  assert.deepEqual(
+    f.calls.find((c) => c.method === "deleteForumTopic")?.params,
+    { chat_id: OWNER, message_thread_id: 33 },
+  );
+  const sends = f.calls.filter((c) => c.method === "sendMessage").length;
+  await f.c.handleUpdate(f.cb(confirm, 33));
+  await f.c.handleUpdate(f.msg("late", 33, 71));
+  assert.equal(
+    f.bridgeCalls.some((c) => c[0] === "create" || c[0] === "prompt"),
+    false,
+  );
+  assert.equal(f.calls.filter((c) => c.method === "sendMessage").length, sends);
+});
+test("failed native deletion keeps confirmation retryable; /new cancellation preserves source topic", async (t) => {
+  const f = fixture(t);
+  await f.c.handleUpdate(f.msg("first", 33, 70));
+  const cancel = f.token("Cancel");
+  const call = f.api.call;
+  f.api.call = async (method, params) => {
+    if (method === "deleteForumTopic") throw new Error("denied");
+    return call(method, params);
+  };
+  await assert.rejects(
+    f.c.sessionActions.confirm(
+      required(f.c.sessionActions.initiations.values().next().value),
+      { chatId: OWNER, threadId: 33 },
+      71,
+      true,
+    ),
+    /denied/,
+  );
+  assert.ok(f.c.actions.has(cancel));
+  f.api.call = call;
+  await f.c.handleUpdate(f.cb(cancel, 33));
+  await f.c.handleUpdate(f.msg("/new", 44));
+  const count = f.calls.filter((c) => c.method === "deleteForumTopic").length;
+  await f.c.handleUpdate(f.cb(f.token("Cancel"), 44));
+  assert.equal(
+    f.calls.filter((c) => c.method === "deleteForumTopic").length,
+    count,
+  );
+});
+test("pending picker selects without creating, paginates in place and confirms chosen model with queued prompt", async (t) => {
+  const f = fixture(t);
+  await f.c.handleUpdate(f.msg("first", 33, 70));
+  await f.c.handleUpdate(f.cb(f.token("Model"), 33));
+  assert.ok(
+    inlineMarkup(f.last().params.reply_markup)
+      .inline_keyboard.flat()
+      .some((b) => b.text === "✓ p"),
+  );
+  await f.c.handleUpdate(f.cb(f.token("q"), 33));
+  await f.c.handleUpdate(f.cb(f.token("Next"), 33));
+  await f.c.handleUpdate(f.cb(f.token("other-11"), 33));
+  assert.match(requiredField(f.last().params.text), /✓ other-11/);
+  assert.equal(
+    f.bridgeCalls.some((c) => c[0] === "create" || c[0] === "select"),
+    false,
+  );
+  assert.ok(
+    f.calls
+      .filter((c) => c.method === "editMessageText")
+      .every((c) => c.params.message_id === 1),
+  );
+  await f.c.handleUpdate(f.msg("second", 33, 72));
+  await f.c.handleUpdate(f.cb(f.token("Confirm"), 33));
+  assert.deepEqual(
+    f.bridgeCalls.find((c) => c[0] === "select"),
+    ["select", "new", { provider: "q", model: "other-11" }],
+  );
+  assert.deepEqual(
+    f.bridgeCalls.filter((c) => c[0] === "prompt").map((c) => c[2]),
+    ["first", "second"],
+  );
 });
 test("closed native topic explicitly reopens existing binding without new DSH session", async (t) => {
   const f = fixture(t);

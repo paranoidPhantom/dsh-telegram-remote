@@ -6,6 +6,7 @@ import type {
   CloseAction,
   NativePrompt,
   PendingInitiation,
+  PendingPickerAction,
   SessionActionsPort,
 } from "./contracts.js";
 import { TTL, cut } from "../rendering/console-render.js";
@@ -74,6 +75,13 @@ export class ConsoleSessions {
       this.initiations.set(key, pending);
       const rows = [
         [
+          c.button(c.t("model"), ctx, {
+            type: "new-providers",
+            pending,
+            page: 0,
+          }),
+        ],
+        [
           c.button(c.t("confirmNew"), ctx, { type: "new-confirm", pending }),
           c.button(c.t("cancel"), ctx, { type: "new-cancel", pending }),
         ],
@@ -98,6 +106,57 @@ export class ConsoleSessions {
       }
     });
   }
+  async pick(
+    action: PendingPickerAction,
+    ctx: TopicContext,
+    messageId: number,
+  ) {
+    const c = this.console;
+    const pending = action.pending;
+    return c.serial(pending.key, async () => {
+      if (!this.valid(pending, ctx)) return;
+      if (action.type === "new-providers")
+        return c.providers(pending, ctx, action.page, messageId);
+      if (action.type === "new-select") {
+        const models = await c.bridge.models();
+        if (
+          !models.some(
+            (m) => m.provider === action.provider && m.id === action.model,
+          )
+        )
+          return c.models(
+            pending,
+            ctx,
+            action.provider,
+            action.page || 0,
+            messageId,
+            c.t("modelUnchanged", { error: c.t("selectionUnconfirmed") }),
+          );
+        if (
+          pending.model.provider !== action.provider ||
+          pending.model.model !== action.model
+        )
+          pending.model = { provider: action.provider, model: action.model };
+      }
+      return c.models(
+        pending,
+        ctx,
+        action.provider,
+        action.page || 0,
+        messageId,
+      );
+    });
+  }
+  valid(pending: PendingInitiation, ctx: TopicContext) {
+    return (
+      !this.console.closed &&
+      this.initiations.get(pending.key) === pending &&
+      !pending.done &&
+      pending.expires > Date.now() &&
+      pending.ctx.chatId === ctx.chatId &&
+      pending.ctx.threadId === ctx.threadId
+    );
+  }
   async confirm(
     pending: PendingInitiation,
     ctx: TopicContext,
@@ -106,19 +165,27 @@ export class ConsoleSessions {
   ) {
     const c = this.console;
     return c.serial(pending.key, async () => {
-      if (
-        c.closed ||
-        this.initiations.get(pending.key) !== pending ||
-        pending.done ||
-        pending.expires <= Date.now()
-      )
-        return;
+      if (!this.valid(pending, ctx)) return;
+      if (cancel && pending.native) {
+        // Do not delete a topic that has acquired a DSH binding meanwhile.
+        if (await c.bound(ctx.chatId, ctx.threadId)) return;
+        // Retain the controls if Telegram rejects deletion. No DSH session exists.
+        await c.api.call("deleteForumTopic", {
+          chat_id: ctx.chatId,
+          message_thread_id: ctx.threadId,
+        });
+        await c.store.set(
+          `console:topic:rejected:${ctx.chatId}:${ctx.threadId}`,
+          { ...ctx, deleted: true, closed: true },
+        );
+      }
       pending.done = true;
       for (const [token, action] of c.actions)
         if ("pending" in action && action.pending === pending)
           c.actions.delete(token);
       if (cancel) {
         this.initiations.delete(pending.key);
+        if (pending.native) return;
         return c.edit(ctx, messageId, c.t("creationCancelled"), {
           inline_keyboard: [],
         });

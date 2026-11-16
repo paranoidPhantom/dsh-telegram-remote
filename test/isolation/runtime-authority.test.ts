@@ -157,6 +157,10 @@ function fixture(t: TestContext) {
   const fakeApi: TelegramApiPort = {
     getMe: async () => ({ id: 321, username: "fixture_bot" }),
     getWebhookInfo: async () => ({ url: "" }),
+    setMyCommands: async (params) => {
+      capture("setMyCommands", params);
+      return true;
+    },
     getUpdates: async (params) => {
       capture("getUpdates", params);
       assert.ok(adapterSignal);
@@ -253,6 +257,7 @@ function fixture(t: TestContext) {
   const childHandlers: Record<string, RpcHandler> = {};
   for (const method of [
     "runtime.initialize",
+    "settings.update",
     "run.push",
     "session.refresh",
     "approval.request",
@@ -294,9 +299,9 @@ function fixture(t: TestContext) {
     host.close();
     child.close();
   });
-  const initialize = () =>
+  const initialize = (configuredOwner = ownerId) =>
     host.request("runtime.initialize", {
-      ownerId,
+      ownerId: configuredOwner,
       ownerEpoch,
       locale: "en",
       version: "fixture",
@@ -314,6 +319,7 @@ function fixture(t: TestContext) {
   };
   return {
     runtime,
+    fakeApi,
     host,
     child,
     authority,
@@ -325,9 +331,82 @@ function fixture(t: TestContext) {
     sends,
     errors,
     initialize,
+    waitPolling: () => polls.next(),
     dispatch,
   };
 }
+
+test("startup replaces owner command menus before polling and locale changes refresh them", async (t) => {
+  const f = fixture(t);
+  await f.initialize();
+  await f.waitPolling();
+  const menus = () => f.apiCalls.filter((c) => c.method === "setMyCommands");
+  assert.equal(menus().length, 4);
+  const schema = z.object({
+    scope: z.object({ type: z.literal("chat"), chat_id: z.literal(ownerId) }),
+    language_code: z.string(),
+    commands: z.array(
+      z.object({
+        command: z.string(),
+        description: z.string().min(1).max(256),
+      }),
+    ),
+  });
+  for (const call of menus()) {
+    const menu = schema.parse(call.params);
+    assert.deepEqual(
+      menu.commands.map((c) => c.command),
+      [
+        "start",
+        "sessions",
+        "new",
+        "status",
+        "stop",
+        "files",
+        "version",
+        "help",
+      ],
+    );
+    assert.equal(menu.commands[0]?.description, "Open sessions");
+  }
+  assert.deepEqual(
+    menus().map((c) => schema.parse(c.params).language_code),
+    ["", "en", "zh", "ru"],
+  );
+  assert.ok(
+    f.apiCalls.findIndex((c) => c.method === "getUpdates") >
+      f.apiCalls.findLastIndex((c) => c.method === "setMyCommands"),
+  );
+  await f.host.request("settings.update", { locale: "ru-RU" });
+  assert.equal(menus().length, 8);
+  assert.equal(
+    schema.parse(menus().at(-1)?.params).commands[0]?.description,
+    "Открыть список сессий",
+  );
+  await f.host.request("settings.update", { locale: "ru-RU" });
+  assert.equal(menus().length, 8);
+  assert.deepEqual(f.errors, []);
+});
+test("locked owner does not register a Telegram command menu", async (t) => {
+  const f = fixture(t);
+  await f.initialize(0);
+  await f.waitPolling();
+  assert.equal(
+    f.apiCalls.some((c) => c.method === "setMyCommands"),
+    false,
+  );
+});
+
+test("menu registration failure reports error without preventing startup and polling", async (t) => {
+  const f = fixture(t);
+  f.fakeApi.setMyCommands = async () => {
+    throw new Error("menu rejected");
+  };
+  await f.initialize();
+  await f.waitPolling();
+  assert.equal(f.errors.length, 1);
+  assert.ok(f.apiCalls.some((c) => c.method === "getUpdates"));
+});
 
 const message = (
   updateId: number,
