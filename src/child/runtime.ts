@@ -9,6 +9,7 @@ import { createHostPort, type ActorOperationScope } from "./host-port.js";
 import { UpdateIngress } from "./ingress.js";
 import { compileWidget } from "../widgets/compiler.js";
 import { WidgetDelivery } from "../widgets/widget-delivery.js";
+import { createTranslator } from "../i18n/bot-i18n.js";
 
 const initializeSchema = z.object({
   ownerId: z.number().int().nonnegative(),
@@ -89,7 +90,13 @@ const updateSchema = z.object({
       // Telegram emits native stop draft IDs as decimal strings as well as
       // numbers. Normalize only that wire representation, never broad coercion.
       draft_id: z
-        .union([z.number(), z.string().regex(/^[0-9]+$/).transform(Number)])
+        .union([
+          z.number(),
+          z
+            .string()
+            .regex(/^[0-9]+$/)
+            .transform(Number),
+        ])
         .pipe(z.number().int().positive().max(Number.MAX_SAFE_INTEGER)),
     })
     .optional(),
@@ -134,6 +141,7 @@ export class ChildRuntime {
   private readonly approvals = new Map<string, AbortController>();
   private readonly approvalActors = new WeakMap<object, ActorOperationScope>();
   private closing?: Promise<void>;
+  private commandSync: Promise<void> = Promise.resolve();
   private readonly transfers = new Map<
     string,
     { parts: string[]; count: number; bytes: number; expires: number }
@@ -151,7 +159,10 @@ export class ChildRuntime {
       "settings.update": async (payload) => {
         const value = z.object({ locale: z.string() }).parse(payload);
         this.requireSurface();
-        if (this.settings) this.settings.locale = value.locale;
+        if (this.settings && this.settings.locale !== value.locale) {
+          this.settings.locale = value.locale;
+          await this.track(this.syncCommands());
+        }
         return null;
       },
       "run.push": (payload) => this.track(this.run(payload)),
@@ -351,6 +362,7 @@ export class ChildRuntime {
       await this.request("runtime.acquireLease", { botId: me.id }),
     );
     this.surface.username = me.username ?? "";
+    await this.syncCommands();
     this.ingress = new UpdateIngress({
       api: {
         call: async (_method, params) =>
@@ -401,6 +413,44 @@ export class ChildRuntime {
         );
     }, 3000);
     return { initialized: true };
+  }
+  private syncCommands(): Promise<void> {
+    const settings = this.settings;
+    if (!settings || settings.ownerId <= 0) return Promise.resolve();
+    const t = createTranslator(() => settings.locale);
+    const params = {
+      scope: { type: "chat" as const, chat_id: settings.ownerId },
+      // Override old language-specific menus too; DSH, not Telegram, selects locale.
+      commands: [
+        { command: "start", description: t("commandStart") },
+        { command: "sessions", description: t("commandSessions") },
+        { command: "new", description: t("commandNew") },
+        { command: "status", description: t("commandStatus") },
+        { command: "stop", description: t("commandStop") },
+        { command: "files", description: t("commandFiles") },
+        { command: "version", description: t("commandVersion") },
+        { command: "help", description: t("commandHelp") },
+      ],
+    };
+    this.commandSync = this.commandSync.then(async () => {
+      try {
+        for (const language_code of ["", "en", "zh", "ru"]) {
+          if (this.controller.signal.aborted) return;
+          const accepted = await this.adapter?.call("setMyCommands", {
+            ...params,
+            language_code,
+          });
+          if (accepted !== true)
+            throw new Error(
+              "Telegram command registration was not acknowledged",
+            );
+        }
+      } catch (error) {
+        // Menu cosmetics must not take down polling; retry at next startup/locale change.
+        this.options.onError?.(error);
+      }
+    });
+    return this.commandSync;
   }
   private adapterCall(method: string, params: unknown): Promise<unknown> {
     if (!this.adapter) return Promise.reject(new Error("Adapter unavailable"));

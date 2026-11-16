@@ -181,6 +181,7 @@ const WIRE_METHODS: ReadonlySet<string> = new Set([
   "getUpdates",
   "getMe",
   "getWebhookInfo",
+  "setMyCommands",
   "sendMessage",
   "editMessageText",
   "editMessageReplyMarkup",
