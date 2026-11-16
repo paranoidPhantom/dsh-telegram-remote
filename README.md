@@ -13,6 +13,12 @@ Control DeepSeek Harness from a private Telegram bot, built around **Telegram th
 - **Built for tool-heavy work:** compact, collapsed tool logs; updates coalesced per session; only changed log pages are edited; independent draft/edit scheduling across topics with flood-control backoff.
 - **Controls where you work:** informative approvals with colored buttons, in-place model and existing-workspace selection for new sessions, pinned session details, queue steering, and native photo/video/audio or document delivery.
 
+## Preview
+
+<a href="https://raw.githubusercontent.com/paranoidPhantom/dsh-telegram-remote/main/preview.mp4"><img src="preview.png" width="320" alt="Telegram Remote video preview"></a>
+
+[Watch the demo](https://raw.githubusercontent.com/paranoidPhantom/dsh-telegram-remote/main/preview.mp4).
+
 ## Install
 
 1. Open DSH **Plugin Manager** and install **`dsh-telegram-remote`** from npm.

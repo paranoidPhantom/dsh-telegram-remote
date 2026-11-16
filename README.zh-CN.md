@@ -13,6 +13,12 @@
 - **适合密集工具调用：** 紧凑、折叠的工具日志；按会话合并更新；仅编辑有变化的日志页；不同话题独立调度草稿和编辑，并在限流时退避。
 - **就地操作：** 保留操作详情的彩色审批按钮、新建会话时原地选择模型和已有工作区、置顶会话详情、队列引导，以及原生图片、视频、音频或文档发送。
 
+## 预览
+
+<a href="https://raw.githubusercontent.com/paranoidPhantom/dsh-telegram-remote/main/preview.mp4"><img src="preview.png" width="320" alt="Telegram 远程控制视频预览"></a>
+
+[观看演示](https://raw.githubusercontent.com/paranoidPhantom/dsh-telegram-remote/main/preview.mp4)。
+
 ## 安装
 
 1. 打开 DSH **插件管理器（Plugin Manager）**，从 npm 安装 **`dsh-telegram-remote`**。
