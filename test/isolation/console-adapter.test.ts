@@ -28,6 +28,7 @@ function fixture() {
   };
   const selections: string[] = [];
   const bridge: Bridge = {
+    workspaces: async () => [],
     list: async () => [],
     metadata: async () => metadata,
     models: async () => [],

@@ -9,7 +9,7 @@ import type {
   PendingPickerAction,
   SessionActionsPort,
 } from "./contracts.js";
-import { TTL, cut } from "../rendering/console-render.js";
+import { PAGE, TTL, cut } from "../rendering/console-render.js";
 import { topicModeError } from "../i18n/topic-mode.js";
 
 /** Session initiation snapshots live DSH selection; only explicit confirmation creates. */
@@ -75,6 +75,13 @@ export class ConsoleSessions {
       this.initiations.set(key, pending);
       const rows = [
         [
+          c.button(c.t("workspace"), ctx, {
+            type: "new-workspaces",
+            pending,
+            page: 0,
+          }),
+        ],
+        [
           c.button(c.t("model"), ctx, {
             type: "new-providers",
             pending,
@@ -90,6 +97,7 @@ export class ConsoleSessions {
         provider: model.provider,
         model: model.model,
         effort: model.reasoningEffort ? ` · ${model.reasoningEffort}` : "",
+        workspace: c.t("workspaceDefault"),
         hint: c.t(native ? "nativeNewHint" : "newHint"),
       });
       try {
@@ -115,6 +123,84 @@ export class ConsoleSessions {
     const pending = action.pending;
     return c.serial(pending.key, async () => {
       if (!this.valid(pending, ctx)) return;
+      if (action.type === "new-workspaces" || action.type === "new-workspace") {
+        const workspaces = await c.bridge.workspaces();
+        let notice = "";
+        if (action.type === "new-workspace") {
+          const selected = workspaces.find((w) => w.id === action.workspaceId);
+          if (action.workspaceId === undefined) pending.workspace = undefined;
+          else if (selected) pending.workspace = structuredClone(selected);
+          else notice = c.t("workspaceUnavailable");
+        }
+        const page = Math.max(
+          0,
+          Math.min(
+            action.page,
+            Math.max(0, Math.ceil(workspaces.length / PAGE) - 1),
+          ),
+        );
+        const rows = workspaces
+          .slice(page * PAGE, (page + 1) * PAGE)
+          .map((w) => [
+            c.button(
+              `${pending.workspace?.id === w.id ? "✓ " : ""}${w.title} · ${w.path}`,
+              ctx,
+              { type: "new-workspace", pending, workspaceId: w.id, page },
+            ),
+          ]);
+        rows.unshift([
+          c.button(
+            `${pending.workspace ? "" : "✓ "}${c.t("workspaceDefault")}`,
+            ctx,
+            { type: "new-workspace", pending, page },
+          ),
+        ]);
+        const nav = [];
+        if (page > 0)
+          nav.push(
+            c.button(c.t("previous"), ctx, {
+              type: "new-workspaces",
+              pending,
+              page: page - 1,
+            }),
+          );
+        if ((page + 1) * PAGE < workspaces.length)
+          nav.push(
+            c.button(c.t("next"), ctx, {
+              type: "new-workspaces",
+              pending,
+              page: page + 1,
+            }),
+          );
+        if (nav.length) rows.push(nav);
+        rows.push([
+          c.button(c.t("model"), ctx, {
+            type: "new-providers",
+            pending,
+            page: 0,
+          }),
+        ]);
+        rows.push([
+          c.button(c.t("confirmNew"), ctx, { type: "new-confirm", pending }),
+          c.button(c.t("cancel"), ctx, { type: "new-cancel", pending }),
+        ]);
+        return c.edit(
+          ctx,
+          messageId,
+          c.t("createSession", {
+            provider: pending.model.provider,
+            model: pending.model.model,
+            effort: pending.model.reasoningEffort
+              ? ` · ${pending.model.reasoningEffort}`
+              : "",
+            workspace: pending.workspace
+              ? `${pending.workspace.title} · ${pending.workspace.path}`
+              : c.t("workspaceDefault"),
+            hint: c.t(pending.native ? "nativeNewHint" : "newHint"),
+          }) + `\n\n${c.t("chooseWorkspace")}${notice ? `\n${notice}` : ""}`,
+          { inline_keyboard: rows },
+        );
+      }
       if (action.type === "new-providers")
         return c.providers(pending, ctx, action.page, messageId);
       if (action.type === "new-select") {
@@ -194,7 +280,14 @@ export class ConsoleSessions {
         // Native topic already exists. Never create another topic or redirect it.
         if (pending.native && (await c.bound(ctx.chatId, ctx.threadId)))
           throw new Error(c.t("topicAlreadyBound"));
-        const id = await c.bridge.create();
+        if (
+          pending.workspace &&
+          !(await c.bridge.workspaces()).some(
+            (w) => w.id === pending.workspace?.id,
+          )
+        )
+          throw new Error(c.t("workspaceUnavailable"));
+        const id = await c.bridge.create(pending.workspace?.id);
         const ack = await c.bridge.selectModel(id, pending.model);
         if (
           !ack ||

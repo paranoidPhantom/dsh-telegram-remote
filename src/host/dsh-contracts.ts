@@ -74,7 +74,7 @@ export interface SessionController {
   selectModel(
     options: ModelSelection & { sessionId: string },
   ): Promise<{ selected: ModelSelection }>;
-  create(options: Record<string, never>): Promise<{ sessionId: string }>;
+  create(options: { workspaceId?: string }): Promise<{ sessionId: string }>;
   prompt(
     options: {
       sessionId: string;
@@ -159,6 +159,9 @@ export interface BridgeContext<
   sessionQuery: SessionQuery;
   sessionProjections: SessionProjections;
   workingDirectory: WorkingDirectoryService;
+  workspaceRegistry?: {
+    list(): { id: string; title: string; path: string }[];
+  };
   attachments: AttachmentsService;
 }
 export interface CredentialRecord {

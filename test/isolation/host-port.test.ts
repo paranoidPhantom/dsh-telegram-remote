@@ -205,3 +205,28 @@ test("resource descriptors reject excessive allocations before reading", async (
     ["bridge.fileForTurn"],
   );
 });
+
+test("workspace catalog validates DTOs and create carries only the selected workspace identity", async () => {
+  const port = fixture((method) =>
+    method === "bridge.workspaces"
+      ? [{ id: "w", title: "Project", path: "/workspace" }]
+      : "created",
+  );
+  assert.deepEqual(await port.bridge.workspaces(), [
+    { id: "w", title: "Project", path: "/workspace" },
+  ]);
+  assert.equal(await port.bridge.create("w"), "created");
+  assert.deepEqual(port.calls.at(-1), {
+    method: "bridge.create",
+    payload: {
+      generation: "g",
+      ownerEpoch: 2,
+      actor: { ownerId: 7, chatId: 7, threadId: 3, privateChat: true },
+      operationId: "update:42:create",
+      confirmed: true,
+      workspaceId: "w",
+    },
+  });
+  const malformed = fixture(() => [{ id: "w", title: "Project", path: 123 }]);
+  await assert.rejects(malformed.bridge.workspaces(), /response/i);
+});

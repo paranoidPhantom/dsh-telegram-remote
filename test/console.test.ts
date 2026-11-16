@@ -187,7 +187,7 @@ test("callback tokens are opaque and bound to owner, chat, and topic", async (t)
   );
   const stop = required(f.token(card, "Stop"));
   assert.ok(Buffer.byteLength(stop) <= 64);
-  assert.ok(!stop.includes("s1"));
+  assert.notEqual(stop, "s1");
   await f.console.handleUpdate(f.callback(stop, thread + 1));
   await f.console.handleUpdate(f.callback(stop, thread, OWNER, 111));
   assert.equal(f.bridgeCalls.filter((c) => c[0] === "stop").length, 0);
@@ -467,10 +467,17 @@ test("approval allows once only and abort cleans pending decisions", async (t) =
       sentResolve();
     return result;
   };
-  const decision = f.console.approval("s1", { title: "Run command" });
+  const decision = f.console.approval("s1", {
+    title: "Run command",
+    command: "npm run build && echo <done>",
+    reason: "Build the updated plugin",
+  });
   await sent;
   const card = f.lastSend();
   assert.equal(card.params.disable_notification, false);
+  const buttons = inlineMarkup(card.params.reply_markup).inline_keyboard.flat();
+  assert.equal(buttons.find((b) => b.text === "Allow once")?.style, "success");
+  assert.equal(buttons.find((b) => b.text === "Deny")?.style, "danger");
   assert.equal(
     inlineMarkup(card.params.reply_markup)
       .inline_keyboard.flat()
@@ -479,6 +486,26 @@ test("approval allows once only and abort cleans pending decisions", async (t) =
   );
   await f.console.handleUpdate(f.callback(f.token(card, "Allow once"), thread));
   assert.equal(await decision, "allowed-once");
+  const settled = required(
+    f.calls
+      .filter(
+        (c) =>
+          c.method === "editMessageText" &&
+          c.params.text?.includes("Approval: Allowed once"),
+      )
+      .at(-1),
+  );
+  assert.equal(settled.params.parse_mode, "HTML");
+  assert.match(
+    requiredField(settled.params.text),
+    /npm run build &amp;&amp; echo &lt;done&gt;/,
+  );
+  assert.match(requiredField(settled.params.text), /Build the updated plugin/);
+  assert.doesNotMatch(requiredField(settled.params.text), /Approval required/);
+  assert.deepEqual(
+    inlineMarkup(settled.params.reply_markup).inline_keyboard,
+    [],
+  );
   const second = f.console.approval("s1", { title: "Another" });
   f.controller.abort();
   assert.equal(await second, "cancelled");
@@ -538,12 +565,20 @@ test("compact card and /status omit raw counters, duplicate model, directory and
   );
   assert.equal(f.token(status, "Refresh"), undefined);
   assert.equal(f.token(status, "Stop"), undefined);
-  await f.console.handleUpdate(f.callback(f.token(status, "Details"), thread));
-  assert.equal(f.lastSend().params.parse_mode, "HTML");
-  assert.match(
-    requiredField(f.lastSend().params.text),
-    /<blockquote expandable>Directory: \/secret/,
+  assert.equal(f.token(status, "Details"), undefined);
+  const initialCard = required(
+    f.calls.find(
+      (c) => c.method === "sendMessage" && c.params.text?.startsWith("First\n"),
+    ),
   );
+  assert.equal(initialCard.params.parse_mode, "HTML");
+  assert.match(
+    requiredField(initialCard.params.text),
+    /<blockquote expandable>Directory: \/secret\n\ntrace/,
+  );
+  assert.equal(f.token(initialCard, "Details"), undefined);
+  const pinned = required(f.calls.find((c) => c.method === "pinChatMessage"));
+  assert.ok(pinned.params.message_id);
 });
 
 test("custom Stop is fallback-only and only active, including model pickers", async (t) => {

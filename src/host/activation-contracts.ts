@@ -1,4 +1,5 @@
 import type { ZodType } from "zod";
+import type { ToolNameRule } from "../rendering/tool-name.js";
 import type {
   BridgeContext,
   CredentialsService,
@@ -36,6 +37,7 @@ export interface ActivationConfig {
   credentialKey: string;
   bootstrapPath?: string;
   statusPath?: string;
+  toolNameRules?: ToolNameRule[];
 }
 export type Registration = (() => void | Promise<void>) | void;
 export interface DeliveryTable {

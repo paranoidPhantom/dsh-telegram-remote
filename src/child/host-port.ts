@@ -224,10 +224,29 @@ export function createHostPort(options: HostPortOptions) {
         ),
       );
     },
-    async create() {
+    async workspaces() {
+      return parse(
+        z.array(
+          z.object({
+            id: z.string().min(1),
+            title: z.string(),
+            path: z.string(),
+          }),
+        ),
+        await call("workspaces"),
+      );
+    },
+    async create(workspaceId) {
       return parse(
         z.string().min(1),
-        await call("create", { confirmed: true }, true),
+        await call(
+          "create",
+          {
+            confirmed: true,
+            ...(workspaceId === undefined ? {} : { workspaceId }),
+          },
+          true,
+        ),
       );
     },
     async newSessionSelection(source) {

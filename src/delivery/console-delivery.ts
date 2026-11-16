@@ -39,6 +39,7 @@ const draftText = (view: RunView): string =>
     : view.answer || "";
 import { answerParts } from "../rendering/answer-format.js";
 import { relativePathText } from "../rendering/path-display.js";
+import { matchToolName } from "../rendering/tool-name.js";
 import {
   chunks,
   unsupportedDraft,
@@ -113,6 +114,7 @@ export class RunDelivery {
       view.final,
       view.cwd,
       this.console.t,
+      this.console.toolNameRules,
     );
     if (!pages.length) return;
     delivery.logMessageIds ||=
@@ -198,7 +200,8 @@ export class RunDelivery {
     const summary = latestTool
       ? relativePathText(latestTool.summary || "", view.cwd)
       : "";
-    const prefix = latestTool ? `🔧 ${latestTool.name}` : "";
+    const icon = matchToolName(latestTool?.name, this.console.toolNameRules);
+    const prefix = latestTool ? `${icon.emoji} ${latestTool.name}` : "";
     const previewText = latestTool
       ? `${prefix}${summary ? ` — ${summary}` : ""}`
       : draftText(view) || this.console.t("deepDiving");
@@ -216,12 +219,12 @@ export class RunDelivery {
             : [],
         }
       : (answerParts(previewText)[0] ?? { text: "", entities: [] });
-    if (latestTool)
+    if (latestTool && icon.customEmojiId)
       formatted.entities.unshift({
         type: "custom_emoji",
         offset: 0,
-        length: 2,
-        custom_emoji_id: "5220046725493828505",
+        length: icon.emoji.length,
+        custom_emoji_id: icon.customEmojiId,
       });
     if (!this.console.draftsUnsupported) {
       try {

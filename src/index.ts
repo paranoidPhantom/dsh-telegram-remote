@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { toolNameRulesSchema } from "./rendering/tool-name.js";
 import { readFile, writeFile, chmod, unlink, access } from "node:fs/promises";
 import { dirname, resolve, basename } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -58,6 +59,7 @@ export const inject = [
   "sessionProjections",
   "storageDomain",
   "workingDirectory",
+  "workspaceRegistry",
   "agents",
   "fs",
   "attachments",
@@ -93,6 +95,7 @@ export async function apply<Handle>(
     throw new Error(
       "Telegram ownerId must be a non-negative integer; zero disables access until configured.",
     );
+  const toolNameRules = toolNameRulesSchema.parse(config.toolNameRules ?? []);
   const packageDir = await resolvePackageDirectory(import.meta.url);
   const manifest: unknown = JSON.parse(
     await readFile(resolve(packageDir, "package.json"), "utf8"),
@@ -408,6 +411,7 @@ export async function apply<Handle>(
     // Keys are fixed for the supervisor lifetime, closures resolve only the current authority.
     for (const name of [
       "bridge.list",
+      "bridge.workspaces",
       "bridge.models",
       "bridge.newSessionSelection",
       "bridge.create",
@@ -724,7 +728,13 @@ export async function apply<Handle>(
               (async () => {
                 await peer.request(
                   "runtime.initialize",
-                  { ownerId, ownerEpoch, locale: dshLocale(ctx), version },
+                  {
+                    ownerId,
+                    ownerEpoch,
+                    locale: dshLocale(ctx),
+                    version,
+                    toolNameRules,
+                  },
                   { signal },
                 );
                 if (

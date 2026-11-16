@@ -13,6 +13,7 @@ export function fixtureBridge(
 ): ConsoleBridge {
   // Preserve fixture identity: tests deliberately replace capabilities after construction.
   return Object.assign(overrides, {
+    workspaces: async () => [],
     list: unused,
     metadata: unused,
     models: unused,

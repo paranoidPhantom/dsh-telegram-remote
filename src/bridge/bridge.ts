@@ -67,7 +67,8 @@ export interface RemoteBridge {
     selection: ModelSelection,
   ): Promise<ModelSelection & { appliesAtNextStep: boolean }>;
   newSessionSelection(sourceId?: string): Promise<ModelSelection>;
-  create(): Promise<string>;
+  workspaces(): Promise<{ id: string; title: string; path: string }[]>;
+  create(workspaceId?: string): Promise<string>;
   prompt(
     id: string,
     text: string,
@@ -195,8 +196,22 @@ export async function createBridge<Handle>(
         sourceId,
       );
     },
-    async create() {
-      return (await controller.create({})).sessionId;
+    async workspaces() {
+      return (ctx.workspaceRegistry?.list() ?? []).map(
+        ({ id, title, path }) => ({ id, title, path }),
+      );
+    },
+    async create(workspaceId) {
+      if (
+        workspaceId !== undefined &&
+        !(await bridge.workspaces()).some((w) => w.id === workspaceId)
+      )
+        throw new Error("Workspace is no longer available");
+      return (
+        await controller.create(
+          workspaceId === undefined ? {} : { workspaceId },
+        )
+      ).sessionId;
     },
     async prompt(id, text, requestId) {
       return controller.prompt(

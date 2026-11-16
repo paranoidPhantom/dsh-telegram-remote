@@ -31,7 +31,10 @@ interface Tool {
   status: string;
   result?: string;
 }
-function fixture(t: TestContext) {
+function fixture(
+  t: TestContext,
+  toolNameRules?: import("../src/rendering/tool-name.js").ToolNameRule[],
+) {
   const calls: ApiCall[] = [],
     data = new Map<string, FeedbackState>();
   let next = 100;
@@ -82,6 +85,7 @@ function fixture(t: TestContext) {
     bridge,
     store,
     ownerId: 1,
+    toolNameRules,
   });
   t.after(() => console.close());
   data.set("console:topic:s", { chatId: 1, threadId: 2 });
@@ -111,6 +115,51 @@ function fixture(t: TestContext) {
     });
   return { console, calls, data, metadata, bridge, ctx, buttons, last, click };
 }
+
+test("configured tool icons agree in native draft and sealed log with UTF-16 offsets", async (t) => {
+  const f = fixture(t, [
+    { pattern: "read*", emoji: "📖", customEmojiId: "123" },
+  ]);
+  const tool = {
+    callId: "r",
+    name: "mcp__fs__read",
+    summary: "notes.md",
+    status: "running",
+  };
+  await f.console.onRun("s", { turn: 1, toolLog: [tool] });
+  const draft = required(
+    f.calls.filter((c) => c.method === "sendMessageDraft").at(-1),
+  );
+  assert.equal(draft.params.text, "📖 mcp__fs__read — notes.md");
+  const entities = requiredField(draft.params.entities);
+  assert.deepEqual(entities[0], {
+    type: "custom_emoji",
+    offset: 0,
+    length: 2,
+    custom_emoji_id: "123",
+  });
+  const code = required(entities.find((entity) => entity.type === "code"));
+  assert.equal(
+    requiredField(draft.params.text).slice(
+      code.offset,
+      code.offset + code.length,
+    ),
+    "notes.md",
+  );
+  await f.console.onRun("s", {
+    turn: 1,
+    final: true,
+    answer: "done",
+    toolLog: [{ ...tool, status: "completed" }],
+  });
+  assert.ok(
+    f.calls.some(
+      (c) =>
+        typeof c.params.text === "string" &&
+        c.params.text.includes('<tg-emoji emoji-id="123">📖</tg-emoji>'),
+    ),
+  );
+});
 
 test("picker navigation and selections edit one message, page and provider identity retained", async (t) => {
   const f = fixture(t);
@@ -233,7 +282,7 @@ test("ordered durable multi-tool log updates retain final log separate from answ
     .at(-1)!;
   assert.match(
     requiredField(progress.params.text),
-    /<blockquote expandable>Tools.*1\. ✓ Read.*2\. ✗ Test/s,
+    /<blockquote expandable>.*✓ Read.*✗ Test/s,
   );
   assert.ok(!requiredField(progress.params.text).includes("&lt;source&gt;"));
   assert.ok(!f.buttons(progress).some((b) => b.text.includes("Stop")));
@@ -248,7 +297,10 @@ test("ordered durable multi-tool log updates retain final log separate from answ
       (c) => c.method === "editMessageText" && c.params.message_id === logId,
     )
     .at(-1)!;
-  assert.match(requiredField(finalLog.params.text), /finished/);
+  assert.doesNotMatch(
+    requiredField(finalLog.params.text),
+    /Tools|finished|\d+\. /,
+  );
   assert.deepEqual(f.buttons(finalLog), []);
   assert.ok(
     !f.calls.some(
@@ -409,9 +461,12 @@ test("latest tool stays in draft until the next tool flushes it and final retain
     .at(-1)!;
   assert.match(
     requiredField(finalLog.params.text),
-    /1\. ✓ FirstTool.*2\. ✓ SecondTool/s,
+    /✓ FirstTool.*✓ SecondTool/s,
   );
-  assert.match(requiredField(finalLog.params.text), /finished/);
+  assert.doesNotMatch(
+    requiredField(finalLog.params.text),
+    /Tools|finished|\d+\. /,
+  );
   assert.deepEqual(f.buttons(finalLog), []);
   assert.equal(
     f.calls.filter(
@@ -453,7 +508,10 @@ test("large escaped logs paginate without dropping earlier tools and persist eve
     const edit = f.calls
       .filter(
         (c) =>
-          c.method === "editMessageText" && c.params.message_id === messageId,
+          (c.method === "editMessageText" &&
+            c.params.message_id === messageId) ||
+          (c.method === "sendMessage" &&
+            c.params.text === pages[ids.indexOf(messageId)]),
       )
       .at(-1)!;
     assert.deepEqual(f.buttons(edit), []);

@@ -37,7 +37,6 @@ import {
   TTL,
   cut,
   html,
-  chunks,
   compactSession,
   missingTopic,
   missingMessage,
@@ -50,6 +49,7 @@ import { RunDelivery } from "../delivery/console-delivery.js";
 import { formatApproval } from "../rendering/tool-format.js";
 import { fileButtonName } from "../rendering/path-display.js";
 import { topicModeError } from "../i18n/topic-mode.js";
+import type { ToolNameRule } from "../rendering/tool-name.js";
 
 /** Telegram-only delivery projection. No DSH session/model state is persisted.
  * Parent owns polling offsets and calls refresh/onRun for live bridge events.
@@ -64,6 +64,7 @@ export class TelegramConsole {
   readonly bridge: ConsoleBridge;
   readonly store: ConsoleStore;
   readonly ownerId: number;
+  readonly toolNameRules: readonly ToolNameRule[];
   readonly signal?: AbortSignal;
   username = "";
   runtimeVersion?: string;
@@ -94,6 +95,7 @@ export class TelegramConsole {
     ownerId = 0,
     signal,
     getLocale = () => "en",
+    toolNameRules = [],
   }: {
     api: TelegramApiPort;
     bridge: ConsoleBridge;
@@ -101,12 +103,14 @@ export class TelegramConsole {
     ownerId?: number;
     signal?: AbortSignal;
     getLocale?: () => unknown;
+    toolNameRules?: readonly ToolNameRule[];
   }) {
     this.translate = createTranslator(getLocale);
     this.api = api;
     this.bridge = bridge;
     this.store = store;
     this.ownerId = Number(ownerId);
+    this.toolNameRules = toolNameRules;
     this.signal = signal;
     this.closed = Boolean(signal?.aborted);
 
@@ -159,6 +163,9 @@ export class TelegramConsole {
     this.delivery = new RunDelivery({
       api,
       store,
+      get toolNameRules() {
+        return owner.toolNameRules;
+      },
       get t() {
         return owner.t;
       },
@@ -275,6 +282,7 @@ export class TelegramConsole {
     messageId: number,
     text: string,
     reply_markup?: InlineMarkup,
+    parse_mode?: "HTML",
   ) {
     if (reply_markup?.inline_keyboard?.flat().length)
       this.clearedMarkup.delete(`${ctx.chatId}:${messageId}`);
@@ -284,6 +292,7 @@ export class TelegramConsole {
         message_id: messageId,
         text,
         ...(reply_markup ? { reply_markup } : {}),
+        ...(parse_mode ? { parse_mode } : {}),
       });
     } catch (e) {
       if (!notModified(e)) throw e;
@@ -304,21 +313,23 @@ export class TelegramConsole {
     const appearance: Pick<InlineButton, "style" | "icon_custom_emoji_id"> =
       action.type === "providers" && !action.picker
         ? { style: "primary", icon_custom_emoji_id: "5258466217273871977" }
-        : action.type === "details"
-          ? { icon_custom_emoji_id: "5454371323595744068" }
-          : action.type === "close"
-            ? { style: "danger", icon_custom_emoji_id: "5341570033405412393" }
-            : action.type === "steer"
-              ? { icon_custom_emoji_id: "5220197908342648622" }
-              : action.type === "turn-file"
-                ? {
-                    icon_custom_emoji_id: {
-                      added: "5371101764676241385",
-                      removed: "5370673711055653338",
-                      edited: "5375052056551770853",
-                    }[action.kind],
-                  }
-                : {};
+        : action.type === "approve"
+          ? { style: "success" }
+          : action.type === "deny"
+            ? { style: "danger" }
+            : action.type === "close"
+              ? { style: "danger", icon_custom_emoji_id: "5341570033405412393" }
+              : action.type === "steer"
+                ? { icon_custom_emoji_id: "5220197908342648622" }
+                : action.type === "turn-file"
+                  ? {
+                      icon_custom_emoji_id: {
+                        added: "5371101764676241385",
+                        removed: "5370673711055653338",
+                        edited: "5375052056551770853",
+                      }[action.kind],
+                    }
+                  : {};
     return { text: cut(text, 60), callback_data: token, ...appearance };
   }
   controls(
@@ -333,7 +344,6 @@ export class TelegramConsole {
             ? [this.button(this.t("stop"), ctx, { type: "stop", id })]
             : []),
           this.button(this.t("model"), ctx, { type: "providers", id, page: 0 }),
-          this.button(this.t("details"), ctx, { type: "details", id }),
           this.button(this.t("endTopic"), ctx, { type: "close", id }),
         ],
       ],
@@ -394,7 +404,24 @@ export class TelegramConsole {
     mapping: TopicBinding,
     metadata?: SessionMetadata | null,
   ) {
-    const text = this.compact(id, metadata);
+    const diagnostics = metadata
+      ? [
+          metadata.cwd && this.t("directoryPath", { path: metadata.cwd }),
+          await this.bridge.details(id),
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+      : "";
+    const escapedPreview = (value: string, budget: number) => {
+      let text = "";
+      for (const character of value.toWellFormed()) {
+        const escaped = html(character);
+        if (text.length + escaped.length > budget) return `${text}…`;
+        text += escaped;
+      }
+      return text;
+    };
+    const text = `${escapedPreview(this.compact(id, metadata), 1000)}${diagnostics ? `\n\n<blockquote expandable>${escapedPreview(diagnostics, 2700)}</blockquote>` : ""}`;
     // Passive refreshes must never teleport controls back onto the pinned card.
     const owns =
       !mapping.latestControlMessageId ||
@@ -409,13 +436,16 @@ export class TelegramConsole {
         : { inline_keyboard: [] };
     if (mapping.cardId) {
       try {
-        await this.edit(mapping, mapping.cardId, text, markup);
+        await this.edit(mapping, mapping.cardId, text, markup, "HTML");
         return;
       } catch (e) {
         if (!missingMessage(e)) throw e;
       }
     }
-    const message = await this.send(mapping, text, { reply_markup: markup });
+    const message = await this.send(mapping, text, {
+      parse_mode: "HTML",
+      reply_markup: markup,
+    });
     Object.assign(mapping, await this.mapping(id), {
       cardId: message.message_id,
     });
@@ -437,23 +467,6 @@ export class TelegramConsole {
       ),
     });
     await this.latest(ctx, sent.message_id);
-  }
-  async details(id: SessionId, ctx: TopicContext) {
-    const metadata = await this.bridge.metadata(id);
-    const diagnostics = [
-      metadata?.cwd && this.t("directoryPath", { path: metadata.cwd }),
-      await this.bridge.details(id),
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-    for (const part of chunks(diagnostics, 3000)) {
-      const sent = await this.send(
-        ctx,
-        `<blockquote expandable>${html(part)}</blockquote>`,
-        { parse_mode: "HTML", reply_markup: this.controls(id, ctx) },
-      );
-      await this.latest(ctx, sent.message_id);
-    }
   }
 
   async refresh(id: SessionId) {
@@ -630,6 +643,8 @@ export class TelegramConsole {
     switch (action.type) {
       case "new":
         return this.requestNew(ctx, message.message_id);
+      case "new-workspaces":
+      case "new-workspace":
       case "new-providers":
       case "new-models":
       case "new-select":
@@ -724,8 +739,6 @@ export class TelegramConsole {
       case "stop":
         if (await this.running(action.id)) return this.bridge.stop(action.id);
         return;
-      case "details":
-        return this.details(action.id, ctx);
       case "select": {
         this.actions.delete(query.data || "");
         try {
@@ -960,6 +973,10 @@ export class TelegramConsole {
     const mapping = await this.mapping(id);
     if (!mapping || mapping.deleted) return "unavailable";
     if (req.signal?.aborted) return "cancelled";
+    // Keep the reviewed operation visible after settlement, not just an opaque outcome.
+    const requestHtml = formatApproval(req, this.t);
+    const settledHtml = (outcome: ApprovalOutcome) =>
+      `<b>${html(this.t("approvalOutcome", { outcome: this.t(`outcome.${outcome}`) }))}</b>${requestHtml.slice(requestHtml.indexOf("</b>") + 4)}`;
     let resolve: (outcome: ApprovalOutcome) => void = () => {
       throw new Error("Approval promise not initialized");
     };
@@ -986,10 +1003,9 @@ export class TelegramConsole {
           void this.edit(
             mapping,
             pending.messageId,
-            this.t("approvalOutcome", {
-              outcome: this.t(`outcome.${outcome}`),
-            }),
+            settledHtml(outcome),
             { inline_keyboard: [] },
+            "HTML",
           ).catch(() => {});
       },
     };
@@ -1007,7 +1023,7 @@ export class TelegramConsole {
           pending.finish("cancelled");
           return;
         }
-        const message = await this.send(mapping, formatApproval(req, this.t), {
+        const message = await this.send(mapping, requestHtml, {
           parse_mode: "HTML",
           disable_notification: false,
           reply_markup: {
@@ -1029,10 +1045,9 @@ export class TelegramConsole {
           await this.edit(
             mapping,
             pending.messageId,
-            this.t("approvalOutcome", {
-              outcome: this.t(`outcome.${pending.outcome}`),
-            }),
+            settledHtml(pending.outcome || "unavailable"),
             { inline_keyboard: [] },
+            "HTML",
           );
       });
     } catch {

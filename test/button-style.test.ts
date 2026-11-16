@@ -19,10 +19,9 @@ test("toolbar applies requested colors and custom emoji IDs", () => {
   assert.equal(buttons[0]!.text, "Model");
   assert.equal(buttons[0]!.style, "primary");
   assert.equal(buttons[0]!.icon_custom_emoji_id, "5258466217273871977");
-  assert.equal(buttons[1]!.style, undefined);
-  assert.equal(buttons[1]!.icon_custom_emoji_id, "5454371323595744068");
-  assert.equal(buttons[2]!.text, "End topic");
-  assert.equal(buttons[2]!.style, "danger");
-  assert.equal(buttons[2]!.icon_custom_emoji_id, "5341570033405412393");
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[1]!.text, "End topic");
+  assert.equal(buttons[1]!.style, "danger");
+  assert.equal(buttons[1]!.icon_custom_emoji_id, "5341570033405412393");
   c.close();
 });

@@ -1,4 +1,9 @@
 import type { Translator } from "../i18n/bot-i18n.js";
+import {
+  normalizeToolName as normalize,
+  toolEmojiHtml,
+  type ToolNameRule,
+} from "./tool-name.js";
 
 type DataRecord = Record<string, unknown>;
 type BlockKind = "plain" | "title" | "code" | "pre";
@@ -86,12 +91,6 @@ const LABELS: Readonly<Record<string, string>> = {
   additions: "Additions",
   deletions: "Deletions",
 };
-const normalize = (name: unknown): string =>
-  String(name ?? "")
-    .split(/[.:/]/)
-    .pop()
-    ?.replace(/^.*__/, "")
-    .toLowerCase() ?? "";
 const escape = (text: unknown): string =>
   String(text)
     .replace(/&/g, "&amp;")
@@ -280,13 +279,18 @@ export function formatToolResult(name: unknown, text: unknown): string {
   resultBody(text, blocks);
   return render(blocks, LIMITS.result);
 }
-export function formatToolCall(name: unknown, args: unknown): string {
+export function formatToolCall(
+  name: unknown,
+  args: unknown,
+  rules?: readonly ToolNameRule[],
+): string {
   const normalized = normalize(name);
   const blocks = [
     block(TITLES[normalized] || label(normalized || "Tool call"), "title"),
   ];
   fields(parse(args), blocks);
-  return render(blocks, LIMITS.call);
+  const prefix = `${toolEmojiHtml(name, rules)} `;
+  return prefix + render(blocks, LIMITS.call - prefix.length);
 }
 function operationReason(input: unknown): OperationReason | null {
   if (typeof input !== "string") return null;
