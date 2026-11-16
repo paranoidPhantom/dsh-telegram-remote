@@ -19,4 +19,4 @@ Control DeepSeek Harness from a private Telegram bot, built around **Telegram th
 4. Enable private-chat topics in **@BotFather → /mybots → your bot → Bot Settings → Topics**. [Tutorial](https://www.reddit.com/r/hermesagent/comments/1ta5o5g/tutorial_threaded_messages_on_telegram_dm/).
 5. Open your bot and send `/start`. Use `/sessions` or Telegram’s **New Topic** to begin.
 
-DSH must remain running. Only the configured admin can control the bot.
+DSH must remain running: Telegram networking runs in a child process supervised by the DSH plugin, not an independent daemon. Only the configured admin can control the bot.

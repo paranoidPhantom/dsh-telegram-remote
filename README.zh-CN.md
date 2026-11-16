@@ -19,4 +19,4 @@
 4. 在 **@BotFather → /mybots → 你的机器人 → Bot Settings → Topics** 中启用私聊话题。[教程](https://www.reddit.com/r/hermesagent/comments/1ta5o5g/tutorial_threaded_messages_on_telegram_dm/)。
 5. 打开机器人并发送 `/start`。使用 `/sessions` 或 Telegram 的 **New Topic（新建话题）**开始。
 
-DSH 必须保持运行。只有配置的管理员可以控制机器人。
+DSH 必须保持运行：Telegram 网络通信由 DSH 插件监管的子进程处理，并非独立守护进程。只有配置的管理员可以控制机器人。

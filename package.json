@@ -1,15 +1,77 @@
 {
   "name": "dsh-telegram-remote",
-  "version": "0.1.1",
-  "icon": "./telegram-logo.svg",
-  "publishConfig": {"access":"public"},
-  "repository": {"type":"git","url":"git+https://github.com/paranoidPhantom/dsh-telegram-remote.git"},
+  "version": "0.1.2-isolation.1",
+  "icon": "./icon.svg",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paranoidPhantom/dsh-telegram-remote.git"
+  },
   "type": "module",
   "license": "MIT",
   "description": "Telegram Remote — owner-only remote control of DSH sessions through Telegram.",
-  "exports": {".": "./index.js", "./client": "./client.js", "./locale/*.json": "./locale/*.json", "./icon": "./telegram-logo.svg"},
-  "files": ["*.js", "cordis.patch.yml", "locale/*.json", "telegram-logo.svg", "README*.md", "WIDGETS.md", "THIRD_PARTY_NOTICES.md"],
-  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}, "client":{"platform":"web","immediately":true,"inject":["@deepseek-ai/dsh-client-ui-settings"]}},
-  "scripts": {"test": "node --test test/*.test.js"},
-  "dependencies": {"node-telegram-bot-api": "2.4.0", "parse5": "^8.0.0", "postcss": "^8.5.6", "postcss-value-parser": "^4.2.0", "esbuild": "^0.25.12", "ipaddr.js": "^2.2.0", "zod": "^4.1.0"}
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./index.js"
+    },
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README*.md",
+    "WIDGETS.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.client.json",
+    "prepack": "npm run build",
+    "build:test": "node scripts/test.mjs unit --build-only",
+    "typecheck:test": "tsc --project tsconfig.test.json --noEmit",
+    "build:isolation": "node scripts/test.mjs isolation --build-only",
+    "test:isolation": "node scripts/test.mjs isolation",
+    "test": "node scripts/test.mjs unit",
+    "test:all": "npm test && npm run test:isolation",
+    "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts' 'scripts/*.mjs' tsconfig*.json package.json",
+    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts' 'scripts/*.mjs' tsconfig*.json package.json",
+    "verify:package": "npm run build && node scripts/verify-package.mjs"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.12",
+    "ipaddr.js": "^2.2.0",
+    "node-telegram-bot-api": "2.4.0",
+    "parse5": "^8.0.0",
+    "postcss": "^8.5.6",
+    "postcss-value-parser": "^4.2.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "prettier": "^3.10.1",
+    "typescript": "^7.0.2"
+  }
 }

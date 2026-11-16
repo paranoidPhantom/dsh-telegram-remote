@@ -1,2 +1,0 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {dshLocale} from '../dsh-locale.js';
-test('bot follows explicit DSH preference dynamically and falls back to English',()=>{let preference='zh-CN';const ctx={get:()=>({describe:()=>[{ns:'include:locale',value:{preference}}]})};assert.equal(dshLocale(ctx),'zh');preference='ru-RU';assert.equal(dshLocale(ctx),'ru');preference='fr';assert.equal(dshLocale(ctx),'en');preference=undefined;assert.equal(dshLocale(ctx),'en');assert.equal(dshLocale({get:()=>undefined}),'en');});

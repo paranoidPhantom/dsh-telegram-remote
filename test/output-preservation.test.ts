@@ -1,0 +1,194 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import type { TestContext } from "node:test";
+import {
+  deliveryFixture,
+  outputReceipts,
+  replyMarkup,
+  type DeliveryView,
+} from "./delivery-fixture.js";
+
+function fixture(t: TestContext) {
+  const f = deliveryFixture(t, { cardId: 99 });
+  const run = (view: Omit<DeliveryView, "turn">) =>
+    f.surface.onRun("s", {
+      turn: 1,
+      answer: "",
+      partialAnswer: "",
+      outputs: [],
+      ...view,
+    });
+  const texts = () =>
+    f.calls
+      .filter(
+        (x) => x.method === "sendMessage" && x.params.text !== "Deep diving",
+      )
+      .map((x) => x.params.text);
+  return { ...f, run, texts };
+}
+
+test("interstitial committed messages publish immediately, format, and dedupe frames/final", async (t) => {
+  const f = fixture(t);
+  const first = { id: "a", text: "**First** `step`" };
+  await f.run({ outputs: [first], answer: first.text });
+  assert.deepEqual(f.texts(), ["First step"]);
+  const firstCall = f.calls.find((x) => x.params.text === "First step");
+  assert.ok(firstCall?.params.entities);
+  assert.deepEqual(
+    firstCall.params.entities.map((x) => x.type),
+    ["bold", "code"],
+  );
+  await f.run({
+    outputs: [first],
+    answer: first.text,
+    toolLog: [{ callId: "c", name: "tool", status: "running" }],
+  });
+  const second = { id: "b", text: "Second answer" };
+  await f.run({ outputs: [first, second], answer: second.text });
+  await f.run({
+    outputs: [first, second],
+    answer: second.text,
+    final: true,
+    status: "done",
+  });
+  await f.run({ outputs: [first, second], final: true });
+  assert.equal(f.texts().filter((x) => x === "First step").length, 1);
+  assert.equal(f.texts().filter((x) => x === second.text).length, 1);
+  const lastOutput = outputReceipts(f.record("console:run:s:1")).at(-1);
+  assert.ok(lastOutput);
+  const delivered = lastOutput.messageIds.at(-1);
+  const toolbar = f.calls
+    .filter(
+      (x) =>
+        x.method === "editMessageReplyMarkup" &&
+        x.params?.message_id === delivered,
+    )
+    .at(-1);
+  assert.ok(toolbar);
+  assert.ok(
+    replyMarkup(toolbar)
+      .inline_keyboard.flat()
+      .some((button) => button.text === "Model"),
+  );
+  assert.ok(
+    replyMarkup(toolbar)
+      .inline_keyboard.flat()
+      .some((button) => button.text === "End topic"),
+  );
+  const stored = JSON.stringify(f.data.get("console:run:s:1"));
+  assert.ok(!stored.includes("First") && !stored.includes("Second answer"));
+  assert.deepEqual(
+    outputReceipts(f.record("console:run:s:1")).map((x) => x.id),
+    ["a", "b"],
+  );
+  const drafts = f.calls.filter((x) => x.method === "sendMessageDraft");
+  assert.ok(drafts.some((x) => x.params.text === "Deep diving"));
+  const toolDraft = drafts.find((x) => x.params.text === "🔧 tool");
+  assert.ok(toolDraft);
+  assert.deepEqual(toolDraft.params.entities, [
+    {
+      type: "custom_emoji",
+      offset: 0,
+      length: 2,
+      custom_emoji_id: "5220046725493828505",
+    },
+  ]);
+  assert.ok(
+    drafts.every(
+      (x) => x.params.text === "Deep diving" || x.params.text === "🔧 tool",
+    ),
+  );
+});
+
+test("stop preserves previous outputs and publishes distinct current partial attempt", async (t) => {
+  const f = fixture(t);
+  const outputs = [{ id: "a", text: "Earlier message" }];
+  await f.run({
+    outputs,
+    answer: "Earlier message",
+    partialAnswer: "New partial",
+    partialId: "attempt-2",
+  });
+  await f.run({
+    outputs,
+    answer: "Earlier message",
+    partialAnswer: "New partial",
+    partialId: "attempt-2",
+    final: true,
+    status: "stopped",
+  });
+  assert.deepEqual(f.texts(), ["Earlier message", "New partial"]);
+  assert.equal(outputReceipts(f.record("console:run:s:1")).length, 2);
+});
+
+test("stop matching last output or empty partial does not duplicate or add status noise", async (t) => {
+  for (const partialAnswer of ["", "Same"]) {
+    const f = fixture(t);
+    const outputs = [
+      { id: "a", text: "Same" },
+      { id: "empty", text: "" },
+    ];
+    await f.run({ outputs });
+    await f.run({ outputs, partialAnswer, final: true, status: "stopped" });
+    assert.deepEqual(f.texts(), ["Same"]);
+  }
+});
+
+test("cleanup and log failures never swallow durable output or final answer", async (t) => {
+  const f = fixture(t);
+  const original = f.api.call;
+  f.api.call = async (method, params = {}) => {
+    if (
+      method === "editMessageReplyMarkup" ||
+      method === "deleteMessage" ||
+      params.parse_mode === "HTML"
+    )
+      throw Error("cosmetic failure");
+    return original(method, params);
+  };
+  await f.run({
+    outputs: [{ id: "a", text: "Committed" }],
+    toolLog: [{ callId: "c", name: "tool", status: "running" }],
+  });
+  await f.run({
+    outputs: [{ id: "a", text: "Committed" }],
+    partialAnswer: "Preserved partial",
+    final: true,
+    status: "stopped",
+  });
+  assert.deepEqual(f.texts(), ["Committed", "Preserved partial"]);
+  await f.surface.onRun("s", { turn: 2, answer: "Legacy final", final: true });
+  assert.equal(f.texts().at(-1), "Legacy final");
+  const finalMessageIds = f.record("console:run:s:2").finalMessageIds;
+  assert.ok(finalMessageIds);
+  assert.equal(finalMessageIds.length, 1);
+});
+
+test("partial send failure preserves accepted chunk IDs and never ambiguously resends", async (t) => {
+  const f = fixture(t);
+  const original = f.api.call;
+  let attempts = 0;
+  f.api.call = async (method, params = {}) => {
+    if (
+      method === "sendMessage" &&
+      params.text !== "Deep diving" &&
+      ++attempts === 2
+    )
+      throw Error("ambiguous network failure");
+    return original(method, params);
+  };
+  const outputs = [{ id: "long", text: "A".repeat(5000) }];
+  await assert.rejects(f.run({ outputs }), /ambiguous/);
+  const firstReceipt = outputReceipts(f.record("console:run:s:1"))[0];
+  assert.ok(firstReceipt);
+  const ids = [...firstReceipt.messageIds];
+  assert.equal(ids.length, 1);
+  await assert.rejects(
+    f.run({ outputs, final: true }),
+    /automatic resend suppressed/,
+  );
+  assert.equal(attempts, 2);
+  const preservedReceipt = outputReceipts(f.record("console:run:s:1"))[0];
+  assert.ok(preservedReceipt);
+  assert.deepEqual(preservedReceipt.messageIds, ids);
+});

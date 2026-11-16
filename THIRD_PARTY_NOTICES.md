@@ -1,9 +1,10 @@
-# Third-party artwork
+# Artwork and trademarks
 
-`telegram-logo.svg` is the Telegram logo from gilbarbara/logos, retrieved through Iconify (`logos:telegram`).
+`icon.svg` is a custom composite supplied by the repository owner, combining elements of the DeepSeek and Telegram logos.
 
-- Source: https://github.com/gilbarbara/logos
-- Icon endpoint: https://api.iconify.design/logos/telegram.svg
-- Collection license: CC0-1.0 — https://github.com/gilbarbara/logos/blob/main/LICENSE.txt
+- **DeepSeek:** credit for the DeepSeek logo and brand elements. Website: https://www.deepseek.com/
+- **Telegram:** credit for the Telegram logo and brand elements. Website and press resources: https://telegram.org/press
 
-Telegram trademarks belong to their respective owners. This plugin is not affiliated with or endorsed by Telegram.
+The composite design does not imply ownership of the underlying logos. DeepSeek and Telegram names, logos, and trademarks belong to their respective owners. This plugin is not affiliated with or endorsed by DeepSeek or Telegram. No license to the underlying brand assets is implied by this repository's MIT license.
+
+The previously bundled standalone Iconify Telegram logo has been removed.

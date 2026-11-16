@@ -2,7 +2,7 @@
 
 ## Start here
 
-Telegram Remote is a **working, in-process DSH plugin**, not a separate bot daemon. DSH owns session truth; Telegram is a remote view. The worker/child-process design in `ISOLATION.md` is **a proposal only — NOT implemented**. Do not describe existing queue optimizations as process isolation.
+Telegram Remote is a **TypeScript DSH plugin with a supervised child process**, not an independent bot daemon. The Host retains DSH session truth and authority; the child owns Telegram networking, rendering and scheduling. DSH must remain running. Read [ISOLATION.md](ISOLATION.md) for the implemented boundary and recovery/verification limits; source implementation is not proof of successful Desktop activation or Telegram UI behavior.
 
 Read `package.json` for the current version and `git status` before editing. The npm package, GitHub repository, Client factory ID, and bundle module name are `dsh-telegram-remote`. The source directory may still be named `dsh-telegram-console`; do not rename persistent keys simply to match branding. This repository uses MIT; artwork provenance is in `THIRD_PARTY_NOTICES.md`.
 
@@ -10,11 +10,15 @@ Read `package.json` for the current version and `git status` before editing. The
 
 ```sh
 npm ci --ignore-scripts
+npm run typecheck
+npm run typecheck:test
 npm test
-npm pack --dry-run
+npm run test:isolation
+npm run build
+npm pack --ignore-scripts --dry-run
 ```
 
-Source is plain ESM JavaScript; there is no source build step. `client.js` uses the Harness module loader and `React.createElement`, not JSX or a standalone server. `esbuild` is used at runtime for widget module compilation; an environment without its platform binary may require its approved install script. Validate edited modules with `node --check`.
+Implementation and tests are TypeScript under `src/` and `test/`. `scripts/build.mjs` emits ESM JavaScript/declarations into `dist/`, bundles `src/client/index.ts` into the classic Harness module-loader `client.js`, and writes the thin root `index.js` entry. Edit source, not generated entries. `npm test` compiles tests into `.build/unit/`; isolation tests use `.build/isolation/`. The suite runner clears only its verified generated directory before compiling, preventing stale renamed tests from running. `npm run test:all` runs both suites; `npm run verify:package` rebuilds and inspects an actual archive with extracted-entry smoke checks. `npm run typecheck` checks Host/child and Client projects; `npm run typecheck:test` checks tests. Build before packing with `--ignore-scripts` (which skips `prepack`). `esbuild` is also used at runtime for widget compilation; its platform binary may require an approved install script. `node --check` on emitted JavaScript supplements, not replaces, TypeScript checks.
 
 Tests inject Telegram APIs, clocks, storage, filesystem providers, and lightweight Client mocks. Never use a real token in fixtures. Run the whole suite after cross-module changes; do not hardcode the test count in documentation. Packaging tests check identity, locale/readme resources, locked defaults, and safety boundaries. Inspect the actual archive, not just the manifest's `files` list.
 
@@ -22,25 +26,26 @@ Tests inject Telegram APIs, clocks, storage, filesystem providers, and lightweig
 
 | Area | Files / responsibility |
 | --- | --- |
-| Activation | `index.js`: dependency injection, settings, events, timers, prompt sections, polling lifecycle |
-| DSH bridge | `bridge.js`: live/cold session operations, exact queue steering, file access; `session-selection.js`: fresh model suggestions |
-| Projections | `run-projection.js`: pure turn fold; `touched-files.js`: successful file-change aggregation and confined downloads |
-| Bot routing | `console.js`: owner authorization, opaque callbacks, commands, latest toolbar ownership |
-| Topic lifecycle | `console-sessions.js`: confirmed new sessions, queued native-topic prompts, Telegram-only topic deletion |
-| Pickers | `console-picker.js`: lazy session listing and in-place model/provider selection |
-| Output delivery | `console-delivery.js`: durable output receipts, segmented logs, native drafts, stopped partials; `stream-scheduler.js`: bounded/coalesced frames |
-| Telegram carrier | `adapter.js`: node-telegram-bot-api adapter, HTTPS carrier, scheduling lanes, cooldowns, native media |
-| Settings | `settings-host.js`: authenticated write-only credentials/settings endpoint; `client.js`: themed Settings section |
-| Localization | `bot-i18n.js`: bot dictionaries; `dsh-locale.js`: Host preference; `locale/*.json`: inventory metadata; Client keeps its UI dictionaries |
-| Rendering | `answer-format.js`: Markdown subset to Telegram entities; `console-render.js`: collapsed logs/status; `tool-format.js`: bounded semantic tool/approval HTML; `path-display.js`: presentation-only relative paths |
-| Files | `send-file.js`: model-facing artifact tool; `media-kind.js`: conservative extension + signature selection |
-| Widgets | `compiler.js`, `safe-fetch.js`, `widget-pipeline.js`, `widget-delivery.js`: guarded resource inlining and send-before-delete replacement |
-| Lifecycle | `runtime-lifecycle.js`: abort and drain work owned by one activation |
+| Activation | `src/index.ts`: Host wiring, settings, semantic event publication, prompts, file/widget tools and child rotation |
+| Supervision | `src/host/launcher.ts`, `supervisor.ts`, `lease.ts`: sanitized non-detached fork, handshake, restart budget, owned-PID shutdown and local bot exclusion |
+| Authority and recovery | `src/host/authority.ts`, `approvals.ts`, `operations.ts`, `inbox.ts`, `resources.ts`: Host-only capabilities, decision IDs, operation journal, inbound admission and bounded resource handles |
+| IPC | `src/protocol/`: validated versioned JSON, generation fences, bounded RPC, cancellation and process transport |
+| Child runtime | `src/child/index.ts`, `runtime.ts`, `host-port.ts`, `ingress.ts`: entry/handshake, Telegram surface, RPC bridge, polling/admission and priority dispatch |
+| DSH bridge | `src/bridge/bridge.ts`, `session-selection.ts`: live/cold sessions, exact queue steering, file access and fresh model suggestions |
+| Projections | `src/projection/run-projection.ts`, `types.ts`; `src/files/touched-files.ts`: pure folds, successful file-change aggregation and confined downloads |
+| Bot | `src/bot/console.ts`, `console-sessions.ts`, `console-picker.ts`, `contracts.ts`: owner controls, topics, model confirmation and explicit surface contracts |
+| Delivery | `src/delivery/console-delivery.ts`, `stream-scheduler.ts`, `runtime-lifecycle.ts`: output receipts, segmented logs, native drafts, coalescing and owned async work |
+| Telegram carrier | `src/telegram/adapter.ts`, `safe-fetch.ts`: API transport, lanes/cooldowns/native media and guarded fetching |
+| Settings / Client | `src/host/settings-host.ts`; `src/client/`: authenticated credential/settings endpoint and themed Harness Settings section |
+| Localization | `src/i18n/`: bot dictionaries, Host locale and topic mode; `locale/*.json`: inventory metadata; `src/client/messages.ts`: UI dictionaries |
+| Rendering | `src/rendering/`: Telegram entities, collapsed logs, semantic tool/approval HTML and presentation-only paths |
+| Files / widgets | `src/files/send-file.ts`, `media-kind.ts`; `src/host/widget-pipeline.ts`, `src/widgets/`: Host-confined reads, chunked resource transfer, child compilation/delivery and source fallback |
+| Build / tests | `scripts/build.mjs`, `tsconfig*.json`, `test/*.test.ts`, `test/isolation/*.test.ts`: emitted package and separate regression/IPC suites |
 
 ## Persistent state and security
 
 - **Secrets:** use `ctx.credentials.modifyRecord/readRecord` with key `telegram-console/bot`; the local provider persists it in DSH's `.credentials.yaml`. Never edit that file yourself, return the saved token to the browser, or place it in config, argv, logs, fixtures, or Git. Settings verify writes by reading back internally; a blank token means keep the existing one.
-- **Delivery/settings:** storage domain `telegram_console_delivery`, table `delivery`. Keys include `settings:adminUserId`, `poll-offset`, `console:topic:*`, `console:run:*`, and `widget:*`. Store message IDs, hashes, cursors, and plugin settings—not a competing database of DSH state. Runtime render caches may be derived/in-memory.
+- **Delivery/settings:** storage domain `telegram_console_delivery`, table `delivery`. Keys include `settings:adminUserId`, `settings:ownerEpoch`, `console:inbox`, `console:operation:*`, `poll-offset`, `console:topic:*`, `console:run:*`, and `widget:*`. Store message IDs, hashes, cursors, and plugin settings—not a competing database of DSH state. Runtime render caches may be derived/in-memory.
 - **Locked first run:** the shipped patch uses `ownerId: 0`. No user is authorized until configured through Settings. Do not restore a personal default ID or absolute home path.
 - **Admin changes:** clear pending controls and detach old topic bindings. Never let old-admin callbacks authorize operations for a new owner.
 - **Settings route:** `/telegram-console/settings` uses Harness `connection.requestRejection/admit`, owner admission, bounded JSON input, and no-store responses. Desktop origins need Harness trust checks, NOT an arbitrary equality check against the internal HTTP origin. Preserve CSRF/Host/Origin protection.
@@ -58,7 +63,7 @@ Session projections are pure JSON folds; preserve reference identity for irrelev
 
 ### Topics, models, and controls
 - `/sessions` **never creates topics just by listing**. Every session row is a callback button, even when a topic already exists. Only an explicit tap opens/creates the topic and then offers its link. Bot API cannot force client navigation.
-- Native Telegram **New Topic** is supported. Confirm a live DSH model suggestion before creating/binding a DSH session. Preserve first prompts and original request IDs while waiting. Pending initiation text is currently memory-only and does not survive a Host restart.
+- Native Telegram **New Topic** is supported. Confirm a live DSH model suggestion before creating/binding a DSH session. Preserve first prompts and original request IDs while waiting. Pending model-confirmation state is child-memory-only; do not promise survival across child or Host restart merely because inbound updates are journaled.
 - `/new` / New session uses the same owner-only model confirmation, then supplies a topic link. DSH owns defaults and selection; no bot-side preferred model. Native DSH model changes apply at the **next step boundary**, not necessarily the next turn.
 - Model/provider picker edits the **same message** and marks the DSH-confirmed provider/model with ✓. No separate acknowledgement messages; preserve the previous selection and show an inline failure when rejected. Serialize mutations without recursively entering the same session queue.
 - End topic confirms deletion of the Telegram topic/history only. Never delete or stop the DSH session. Closed mappings remain tombstoned; late events must not revive them. Explicit reopening is allowed.
@@ -79,34 +84,34 @@ Session projections are pure JSON folds; preserve reference identity for irrelev
 - Existing lanes: persistent sends paced per chat (~1100 ms), edits per message and drafts per topic (~300 ms), global outbound concurrency capped at 4. Polling and callback acknowledgements bypass normal outbound lanes. Respect Telegram's global 429 cooldown.
 - Coalesce replaceable progress/drafts, never durable outputs or approval lifecycle decisions. Cache semantic page/control state; random callback IDs must not force otherwise identical edits. Update only changed pages.
 - Heartbeats have one pending slot per session and read the latest view when admitted. Legacy toolbar migration runs once per activation, not every turn.
-- Known remaining bottlenecks: polling awaits each update handler; session queues mix several kinds of work; sealing a log is awaited before its following output. `cosmetic()` suppresses some failures and current diagnostics retain only the last error, not a complete delivery trace. Investigate these before adding queues or promising real-time performance.
+- Polling now awaits Host inbox admission, not handler completion. Child ingress dispatches bounded normal work with per-topic gates and a reserved serial priority slot for Stop/approval actions; authorization still applies. Host RPC/storage stalls can still delay admission or controls, session queues still mix work, and sealing a log is awaited before its following output. `cosmetic()` suppresses some failures; status diagnostics are not a complete delivery trace. Snapshot coalescing is not a durable committed-output queue; verify loss/replay boundaries before promising real-time or lossless delivery.
 
 ### Files and widgets
 - `send_file` uploads a finished artifact and includes its workspace-relative path in the caption. Enforce canonical workspace containment, regular-file status, cancellation, and the 10 MiB cap.
 - Native media selection currently covers JPEG/PNG photos, GIF animations, MP4 video, MP3/M4A audio after extension + signature checks. Other formats stay documents. Only definitive format rejection may fall back to document; do not retry ambiguous network sends.
-- Final file buttons use exact recorded turn/path allowlists. Added/removed/edited emoji IDs are in `console.js`. Removed files require authoritative full pre-deletion bytes; never reconstruct arbitrary missing files from incomplete hunks. Current historical downloads are confined to the recorded/header workspace and can reject switched-workspace paths.
+- Final file buttons use exact recorded turn/path allowlists. Added/removed/edited emoji IDs are in `src/bot/console.ts`. Removed files require authoritative full pre-deletion bytes; never reconstruct arbitrary missing files from incomplete hunks. Current historical downloads are confined to the recorded/header workspace and can reject switched-workspace paths.
 - Widgets use guarded bounded resource fetching, private-IP/redirect/DNS checks, deterministic compilation, and compiled-hash deduplication. Limits: 32 KiB raw HTML and 4 KiB zlib-9. Replacement sends first, deletes old second. Queries are disabled.
 - **Do not promise production widget availability.** Telegram has rejected general bots with `INPUT_MEDIA_WIDGET_NOT_ALLOWED` despite older docs claiming private-chat support. Treat this as server eligibility, not invalid HTML; preserve the source-document fallback. Consult current upstream status before changing behavior.
 
 ## Localization and documentation
 
-Supported languages: **en, zh, ru**; regional/underscore tags normalize to the base. Bot language comes from `settings.describe({redactSecrets:true})` → locale namespace `value.preference`, read dynamically by `dsh-locale.js`. Unsupported/unset values fall back to English; do not use Telegram `language_code`, browser language, or OS language for bot selection.
+Supported languages: **en, zh, ru**; regional/underscore tags normalize to the base. Bot language comes from `settings.describe({redactSecrets:true})` → locale namespace `value.preference`, resolved by `src/i18n/dsh-locale.ts`. The child receives locale at initialization and the Host forwards detected preference changes through `settings.update`; the lifecycle-owned check runs once per second. Treat that as eventual propagation, not a visually verified instantaneous UI change. Unsupported/unset values fall back to English; do not use Telegram `language_code`, browser language, or OS language for bot selection.
 
-Add every plugin-owned bot message/button to all three dictionaries in `bot-i18n.js`; keep key/placeholder parity. Translate metadata and Settings UI too. Do not translate model answers, file contents, tool/provider identifiers, paths, or arbitrary backend details. Settings GET exposes only normalized locale and token presence, never token value. Prefer semantic action IDs over comparing translated button labels.
+Add every plugin-owned bot message/button to all three dictionaries in `src/i18n/bot-i18n.ts`; keep key/placeholder parity. Translate metadata and Settings UI too. Do not translate model answers, file contents, tool/provider identifiers, paths, or arbitrary backend details. Settings GET exposes only normalized locale and token presence, never token value. Prefer semantic action IDs over comparing translated button labels.
 
 Keep `README.md`, `README.zh-CN.md`, and `README.ru.md` concise, equivalent, mutually linked, and carrying the same npm badge/install instructions. Update their capability claims when behavior changes. `README*.md` and `locale/*.json` must remain in packed resources. Design details belong here or in `ISOLATION.md` / `WIDGETS.md`, not the minimal README.
 
 ## Verification and release checklist
 
-1. Add focused regressions, then run all tests and syntax checks. Useful groups: `output-preservation` / `projection-output` / `log-segments`; `delivery-efficiency` / `adapter` / `stream-scheduler`; `native-sessions` / `console`; `settings-host` / `settings-route`; `bot-i18n` / `dsh-locale` / `readme-locales`; `touched-files` / `send-file` / `media-kind`; `compiler` / `widget-delivery`; `release`.
-2. Inspect `git diff --check`, staged changes, and archive contents. Exclude `.runtime-status.json`, credentials, `.env*`, bootstrap files, `node_modules`, logs, and generated tarballs. Never publish personal IDs or home paths in shipped configuration/source. Preserve MIT `LICENSE` and third-party notices; the Telegram logo comes from the Iconify logos collection, not original project artwork.
+1. Add focused regressions, then run both test suites, Host/Client and test typechecks, build, and emitted-JavaScript syntax checks. Isolation coverage lives in `test/isolation/` (protocol/RPC, supervisor, lease, ingress/inbox, authority, approvals, operations and resources); unit mocks are not real process/Desktop evidence. Useful groups: `output-preservation` / `projection-output` / `log-segments`; `delivery-efficiency` / `adapter` / `stream-scheduler`; `native-sessions` / `console`; `settings-host` / `settings-route`; `bot-i18n` / `dsh-locale` / `readme-locales`; `touched-files` / `send-file` / `media-kind`; `compiler` / `widget-delivery`; `release`.
+2. Inspect `git diff --check`, staged changes, and archive contents. Exclude `.runtime-status.json`, credentials, `.env*`, bootstrap files, `node_modules`, logs, and generated tarballs. Never publish personal IDs or home paths in shipped configuration/source. Preserve MIT `LICENSE` and artwork notices. `icon.svg` is the repository owner's custom composite of DeepSeek and Telegram logo elements; preserve both credits in `THIRD_PARTY_NOTICES.md`. Do not overwrite it or restore the removed standalone Telegram logo.
 3. Bump package version and refresh `package-lock.json` with `npm install --package-lock-only --ignore-scripts`. Verify package name, patch module, and Client loader ID all equal `dsh-telegram-remote`. Published npm versions cannot be overwritten; repack after any release-content change.
-4. Build and inspect `npm pack --ignore-scripts`; run secret/personal-path checks on the actual tarball. Publish the verified archive with `npm publish ./dsh-telegram-remote-<version>.tgz --access public`. MFA/EOTP may require the human to authenticate locally; never request their password, token, or OTP in chat. Verify npm version, `latest` tag, and tarball checksum before claiming publication.
+4. Run `npm run build`, then create an archive with `npm pack --ignore-scripts` and inspect it with `tar -tzf ./dsh-telegram-remote-<version>.tgz`. Verify emitted `dist/index.js`, `dist/child/index.js`, declarations, generated Client, locale/readme resources and absence of legacy duplicate implementations; run secret/personal-path checks on the actual tarball. Publish the verified archive with `npm publish ./dsh-telegram-remote-<version>.tgz --access public`. MFA/EOTP may require the human to authenticate locally; never request their password, token, or OTP in chat. Verify npm version, `latest` tag, and tarball checksum before claiming publication.
 5. Git remote is `https://github.com/paranoidPhantom/dsh-telegram-remote` (origin commonly SSH), branch `main`. Commit/push only when authorized; never force-push or include unrelated changes.
 6. Install/update only through Harness Plugin Manager. It may require remove-then-install for local replacements; do not manually edit profile dependencies or bypass install-script approval. Never activate both legacy `@local/dsh-telegram-console` and renamed packages as independent pollers.
 7. **Installed is not loaded.** Check the returned activation result and runtime identity. Runtime diagnostics default to `<resolved packageDir>/.runtime-status.json` (or explicit `statusPath`); discover packageDir via Inspect, not a historical generation path or the source workspace. `/version` reports the bot handling requests. Same semantic version local generations may differ. Ask the user to restart DSH when needed; never restart your own Host.
 8. Separate unit-test, activation, and actual Telegram/Desktop UI evidence. Desktop cannot always be exercised by browser MCP. Do not claim a credential save, custom emoji, typing animation, or rich-text appearance was visually verified from mocks alone. Runtime `lastError` can be stale; correlate DSH committed events and delivery receipts for missing messages.
 
-## Next-agent isolation work
+## Continuing isolation work
 
-If asked to implement isolation, first read `ISOLATION.md`. Recommended direction is a **supervised child process**, not an unreferenced detached daemon: move Telegram networking/rendering/scheduling to the child; keep DSH state, credentials authority, prompts, model changes, and approval decisions in the Host. Define versioned bounded IPC, replay/cursor and backpressure semantics, one-poller ownership, and shutdown on parent death/unload. Send credentials over a private pipe, never argv/logs. Test busy Host, child crash, lost IPC, duplicate updates, credential rotation, restart, and uninstall. None of this process split exists yet; measure the existing head-of-line delays before attributing every lag to agent computation.
+Read [ISOLATION.md](ISOLATION.md) before changing the boundary. Preserve Host authority, private-pipe credentials, version/generation/owner fences, one-poller exclusion, and shutdown before lease/store release. Do not add a detached/unreferenced daemon or an in-process fallback. Inbox admission, DSH operation completion and Telegram delivery are separate acknowledgements. Recovery is evolving: verify actual storage durability, crash windows, bounded cold replay and committed-output coverage rather than declaring durable session cursors or exactly-once delivery complete. Exercise busy Host, real child launch/crash/disconnect, credential/admin rotation, unload/reload, Host restart and uninstall; record actual evidence separately from mocks.
