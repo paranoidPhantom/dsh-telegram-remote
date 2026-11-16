@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.test.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "outDir": ".build/isolation"
+  },
+  "include": ["src/**/*.ts", "test/isolation/**/*.ts"],
+  "exclude": ["src/client", "node_modules", ".build", "dist", ".cache"]
+}

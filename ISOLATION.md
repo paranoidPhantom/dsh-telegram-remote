@@ -1,43 +1,59 @@
-# Telegram Remote: execution isolation proposal
+# Telegram Remote: supervised-process architecture
 
-## Current facts
+## Implementation status
 
-The bot is an async loop inside the DSH Host process. It does not have its own Node process. Normal awaited network/model calls yield the event loop; an agent being active does not inherently block Telegram. Synchronous work (projection folds, rendering/hashing, JSON serialization, widget transforms) and explicit queues can block or delay it.
+The TypeScript implementation under `src/` splits the DSH Host plugin from a supervised Telegram child process. This is no longer only a process-isolation proposal. It is also not an independent daemon: **DSH must remain running**. The implementation and its recovery paths are evolving; source wiring and mock-based tests do not establish successful installed Desktop activation, lossless recovery, Telegram eligibility or visually verified behavior.
 
-There are also head-of-line queues that moving networking alone cannot fix:
-- pollUpdates awaits handleUpdate for each incoming update before reading the next; slow UI/catalog work can delay incoming Stop/approval updates.
-- session serial queues mix output delivery, picker actions, heartbeat and metadata work.
-- completedOutput awaits sealing the preceding tool log before sending text; a slow log request can delay the answer.
-- native drafts, edits and durable sends have Telegram-side limits. Isolation cannot bypass flood control.
+## Ownership and integration
 
-## Recommendation: supervised child process, not an unmanaged daemon
+- **Host — `src/index.ts`, `src/host/`, `src/bridge/`, `src/projection/`:** Cordis registrations, DSH session truth/projections, credential authority, settings route, model/prompt/steer/stop mutations, approval decisions, confined filesystem access, storage and resource handles.
+- **Child — `src/child/`, `src/bot/`, `src/telegram/`, `src/delivery/`, `src/rendering/`, `src/widgets/`:** Telegram polling, callback routing, topic/model surface, drafts, rendering, outbound scheduling, native media and widget compilation/delivery. Host-created resource descriptors provide bounded file/widget bytes over RPC rather than arbitrary child filesystem authority.
+- **Client — `src/client/`:** the Harness Settings UI, compiled to the root classic-script `client.js`; it is not a standalone application.
 
-A worker thread has an independent JS event loop and is a useful incremental stage, but still shares the host process lifetime and address space. For actual crash/GC/event-loop isolation, use a child process supervised by a small Host plugin. Do not set detached:true or unref it: that would recreate the orphan poller problem after uninstall/restart.
+The Host adapts DSH projections to semantic run views containing normal outputs, tool summaries, status and touched-file metadata. It does not serialize live Cordis/Agent/Session objects or reasoning chunks. The child asks the Host for explicit allowlisted capabilities through `src/child/host-port.ts` and `src/host/authority.ts`.
 
-The child owns Telegram polling, rate-limit scheduling, message rendering, delivery metadata cache, callback routing and widget compilation. The Host owns DSH session truth, model changes, prompt admission, queue steering, and actual approval decisions. No Cordis Context/Agent/Session object crosses IPC.
+Credentials remain in DSH under `telegram-console/bot`. The child obtains the token over the private parent/child IPC channel; it must never appear in argv, inherited environment, logs or browser responses. Generation and owner-epoch fences constrain requests, while Host mutations additionally check actor/topic ownership. Approval IDs are Host-owned, expiring and cancellable; only authorized Telegram actions may settle them. A process boundary is not an OS sandbox or a guarantee that a compromised child is harmless.
 
-## Boundary
+## Process lifecycle and IPC
 
-Use versioned JSON IPC envelopes {version,id,type,payload}. Host publishes sequenced per-session output/tool/status changes; child requests bounded snapshots on startup/gaps. Parent answers explicit operations (list/create/metadata/selectModel/prompt/steer/stop). Approval requests carry unguessable decision IDs and cancellation; only allowlisted Telegram user actions can answer them. Never expose an approval-granting agent tool.
+`src/host/launcher.ts` uses a non-detached fork with a sanitized environment, empty `execArgv`, ignored console streams and one private IPC channel. `src/host/supervisor.ts` checks a version/build/generation/PID handshake, applies startup/shutdown deadlines, supervises established-child exits with exponential backoff and a restart budget, and terminates only its owned process handle. There is no in-process fallback. The suite exercises the actual launcher and extracted archive child entry in this environment (Electron in explicit Node mode), including handshake and shutdown without Telegram initialization. Installed Desktop plugin activation remains a separate verification step.
 
-Resolve bot credentials through DSH credentials in the Host. Deliver the secret once over the private IPC pipe, never argv/environment/logs; child keeps it only in memory. Credential/admin changes revoke pending controls and restart or reconfigure the child. DSH-owned credential storage remains the only persistent secret source.
+`src/host/lease.ts` provides local filesystem exclusion keyed by Telegram bot identity. Initialization checks bot identity/webhook state and acquires the lease before polling. This is local exclusion, not a distributed lease across machines. Rotation and unload close the owned child before releasing exclusion or closing Host stores. IPC disconnect triggers child shutdown; parent-side termination escalates if graceful shutdown does not exit. Verify those paths in the installed runtime before claiming uninstall/restart cannot leave a poller.
 
-Delivery metadata stays in one store with exactly one writer. Persist delivery receipts before acknowledgement; retain source event cursors for replay. Unknown/ambiguous sends must not be replayed blindly (Telegram has no general send idempotency key).
+`src/protocol/` validates versioned JSON envelopes `{version,generation,id,type,payload}`, bounds serialization and RPC pending/queued capacity, supports cancellation/timeouts, and does not implicitly retry side effects. IPC acceptance, handler completion and Telegram acceptance are different events. Timeouts and lost IPC can leave a side effect uncertain even when the caller receives an error.
 
-## Lifecycle and backpressure
+## Inbound admission and queue behavior
 
-- Parent starts one child per bot, with a single-poller lease and child PID/build status.
-- IPC disconnect or parent death makes child stop polling immediately and exit after bounded drain.
-- Unload: revoke admission, cancel approvals, send shutdown, wait bounded interval, then terminate only the owned child.
-- Supervise failures with exponential backoff, maximum restart budget and explicit offline status.
-- Bound IPC queues; coalesce drafts/progress by session; never discard committed assistant outputs or unanswered approval lifecycle events. Fair scheduling between topics.
-- Do not wait for rendering/network delivery before accepting native Stop updates. Separate inbound acknowledgement/admission from slow work.
+`src/host/inbox.ts` owns `console:inbox` and the compatible `poll-offset` key in the `telegram_console_delivery` / `delivery` store. Admission is serialized: it writes the update entry before advancing the polling offset. These are **two storage writes, not a transaction**. A retry can repair an offset write after the entry was stored. Entries have terminal completed/failed/uncertain outcomes; unresolved capacity and serialized bytes are bounded, and settled history is compacted. Finite retained identity history is not unlimited deduplication.
 
-## Order of implementation
+`src/child/ingress.ts` separates polling/admission from handler completion. Its dispatcher rereads unresolved Host entries rather than keeping an unbounded child backlog. Normal work is bounded and gated per topic; Stop and recognized approval callbacks have a reserved serial priority slot. Routing priority never grants authority. Capacity rejection stops admission of the remainder of that batch. Settlement persistence failure halts ingress rather than blindly executing the same work again; abort marks an unfinished outcome uncertain when settlement is possible.
 
-1. Fix head-of-line queue boundaries and instrument event-to-send latency, pending queue length and 429 waits.
-2. Extract a transport-independent DSH bridge protocol and contract-test fake IPC.
-3. Move Telegram surface/runtime into supervised child process; leave state mutation in Host.
-4. Test parent busy-loop, child crash, host restart/uninstall, duplicate updates, lost IPC, credential rotation and multiple active topics.
+Important recovery limits:
 
-This is a proposal, not an implemented process split. User-visible branding is Telegram Remote; package id, credential record keys and delivery-domain names remain stable for upgrade compatibility.
+- The entry-before-offset ordering relies on the actual storage adapter's write/durability guarantees; it is not proof of crash-safe disk commits.
+- Update admission is not execution acknowledgement. A child crash after a DSH or Telegram side effect but before settlement can leave unresolved work. The operation journal protects selected Host mutations, not every Telegram side effect.
+- Pending replay is filtered by the current owner epoch. Same-owner Host reload retains its persisted epoch so admitted work remains recoverable. An owner change increments the epoch and settles old unresolved entries as uncertain; it never grants their authority to the new owner. Bot identity changes reset the bot-specific inbox/offset and detach old topic bindings.
+- Pending model-confirmation state, callback maps and drafts have child-memory state. Journaling the original update does not by itself restore that state.
+
+## Host operations, receipts and output recovery
+
+`src/host/operations.ts` journals operation identity and running/complete results. Completed results can be reused; in-progress non-idempotent operations are uncertain and suppress automatic replay. Prompt replay uses the original request ID and depends on DSH's idempotency contract. This journal cannot make a remote side effect exactly-once, and journal retention/cleanup must be evaluated separately.
+
+`src/delivery/console-delivery.ts` records committed-output IDs, hashes, Telegram message IDs and completion. Before each normal output chunk it persists a pending marker; accepted message IDs are saved before cosmetic updates. An interrupted pending send suppresses automatic resend. Even a stored message ID with a still-pending marker can require reconciliation. Telegram provides no general send idempotency key: do not equate a transport error with a definitive rejection or claim all artifact/topic/widget sends share the normal-output receipt guarantees.
+
+Host publication coalesces replaceable semantic progress snapshots. Durable boundaries are reconstructed from authoritative session observations, with `console:source:<session>` recording the last acknowledged source sequence for the owner epoch. Replay advances only after the child explicitly acknowledges delivery; detached topics do not count as delivered. The catch-up lane retains one active scan and one dirty rerun instead of a promise per event. Large views transfer in bounded chunks with a 10 MiB aggregate limit; exceeding that limit fails explicitly rather than silently truncating committed text. This relies on the existing Host observation API returning the full ordered session history and on the backing store's durability; tests and code do not establish real Host disk-commit guarantees or exactly-once Telegram sends.
+
+Isolation also does not eliminate head-of-line delays: Host IPC/storage/DSH calls can stall admission and mutations, session queues still mix work, and sealing a tool-log segment is awaited before its following answer. Telegram send/edit/draft pacing and global 429 cooldowns still apply. Coalesce replaceable progress, never intentionally discard committed answers or unresolved approval decisions. Runtime status includes bounded child identity, queue counts, current cooldown, 429 retry-duration samples and child-event-to-send-start latency samples. Those samples exclude Host-side source-event time and do not prove accepted delivery. Status/last-error fields and suppressed cosmetic errors are not a complete delivery trace.
+
+## Verification and remaining obligations
+
+Run `npm run typecheck`, `npm run typecheck:test`, `npm test`, `npm run test:isolation` and `npm run build`. Isolation tests live under `test/isolation/` and cover protocol/RPC, supervision, lease, ingress/inbox, authority, approvals, operation identity and resources. Inspect the emitted archive, including the actual child entry and generated Client, as described in [AGENTS.md](AGENTS.md). Passing unit tests alone does not establish:
+
+1. Real Node and Desktop/Electron child launch/handshake and correct installed package layout.
+2. Child crash, lost IPC, parent death, unload/reload, restart-budget exhaustion and uninstall without a second/orphan poller.
+3. Actual store write ordering/durability, duplicate admission, capacity pressure, operation uncertainty and recovery after accepted-but-unrecorded Telegram sends.
+4. Durable session-output gap recovery across busy Host, multiple turns/topics, cache eviction and long histories; do not call the cursor work complete prematurely.
+5. Credential/admin rotation fencing, old-owner topic/control revocation, approval cancellation, locale propagation and pending native-topic prompt handling across restart.
+6. Real Telegram/Desktop appearance or availability of typing, drafts, Stop, custom emoji, rich text, native media or widgets. Preserve widget source-document fallback; process isolation makes no server-eligibility promise.
+
+Record implementation, unit-test, activation and visual evidence separately. Keep existing credential/storage/section identifiers stable; process isolation is not a reason to rename persistent keys or create a competing DSH session database.
