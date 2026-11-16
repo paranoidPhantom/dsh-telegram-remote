@@ -26,12 +26,26 @@ export const toolNameRulesSchema = z
   .max(100);
 export type ToolNameRule = z.infer<typeof toolNameRulesSchema>[number];
 
-export const normalizeToolName = (name: unknown): string =>
+const toolNameComponent = (name: unknown): string =>
   String(name ?? "")
     .split(/[.:/]/)
     .pop()
-    ?.replace(/^.*__/, "")
-    .toLowerCase() ?? "";
+    ?.replace(/^.*__/, "") ?? "";
+
+export const normalizeToolName = (name: unknown): string =>
+  toolNameComponent(name).toLowerCase();
+
+/** Presentation only: keep the original identifier for calls and icon rules. */
+export function displayToolName(name: unknown): string {
+  const words = toolNameComponent(name)
+    .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return words.replace(/^./u, (char) => char.toUpperCase());
+}
 
 export function matchToolName(
   name: unknown,

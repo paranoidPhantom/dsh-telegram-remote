@@ -1,5 +1,9 @@
 import { formatToolCall, formatToolResult } from "../rendering/tool-format.js";
 import {
+  namedCallSummary,
+  jobResultSummary,
+} from "../rendering/tool-summary.js";
+import {
   mutationIntents,
   successfulMutations,
   aggregateTouched,
@@ -148,7 +152,8 @@ export function foldRun(state: RunState, event: RunEventInput): RunState {
             callId: d.callId,
             name: d.name,
             status: "running",
-            summary: toolSummary(d.arguments),
+            summary:
+              namedCallSummary(d.name, d.arguments) ?? toolSummary(d.arguments),
             mutations,
             callHtml: formatToolCall(
               d.name,
@@ -173,6 +178,12 @@ export function foldRun(state: RunState, event: RunEventInput): RunState {
         ...call,
         status: failed ? ("failed" as const) : ("completed" as const),
         endedAt: event.time,
+        summary:
+          jobResultSummary(
+            call.name,
+            textOf(d.message.content),
+            call.summary,
+          ) ?? call.summary,
         result: preview(textOf(d.message.content), 640),
         resultHtml: formatToolResult(call.name, textOf(d.message.content)),
       };
@@ -269,7 +280,7 @@ export function foldRun(state: RunState, event: RunEventInput): RunState {
 }
 export const runProjection = {
   key: "telegramConsoleRun",
-  stateVersion: 8,
+  stateVersion: 9,
   stateSchema: runStateSchema,
   init: initialRun,
   apply: foldRun,

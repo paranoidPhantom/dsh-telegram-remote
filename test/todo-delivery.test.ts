@@ -84,7 +84,7 @@ function fixture() {
 test("semantic todo snapshot survives turns; invalid or failed tool arguments do not mutate it", () => {
   const empty = initialRun();
   const state = foldRun(empty, { type: "todo/write", seq: 4, data: { todos } });
-  assert.equal(runProjection.stateVersion, 8);
+  assert.equal(runProjection.stateVersion, 9);
   assert.deepEqual(state.todos, todos);
   assert.equal(state.todoVersion, 4);
   const next = foldRun(state, {

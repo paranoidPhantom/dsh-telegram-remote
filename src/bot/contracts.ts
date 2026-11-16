@@ -496,6 +496,7 @@ export interface DeliveryPort extends QueuePort {
     messageId: number,
     text: string,
     markup?: InlineMarkup,
+    parse_mode?: "HTML",
   ): Promise<unknown>;
   preview(
     mapping: TopicBinding | undefined,

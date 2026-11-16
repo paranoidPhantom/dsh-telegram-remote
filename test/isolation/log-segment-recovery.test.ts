@@ -141,7 +141,7 @@ for (const explicitBoundary of [true, false]) {
     );
     const sentLog = f.calls.find((call) => call.id === newLog);
     assert.ok(sentLog);
-    assert.match(String(sentLog.params.text), /ReadB/);
-    assert.doesNotMatch(String(sentLog.params.text), /ReadA/);
+    assert.match(String(sentLog.params.text), /Read b/);
+    assert.doesNotMatch(String(sentLog.params.text), /Read a/);
   });
 }

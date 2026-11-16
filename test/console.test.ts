@@ -312,7 +312,11 @@ test("serialized streaming has immediate Stop, native draft, one answer and no r
   const calls = f.calls.slice(before),
     sends = calls.filter((c) => c.method === "sendMessage");
   assert.equal(sends.length, 2);
-  assert.equal(requiredField(sends[0]!.params.text), "Deep diving");
+  assert.equal(
+    requiredField(sends[0]!.params.text),
+    '<tg-emoji emoji-id="5258121851091043775">⏳</tg-emoji>',
+  );
+  assert.equal(sends[0]!.params.parse_mode, "HTML");
   assert.equal(f.token(sends[0], "Stop"), undefined);
   assert.equal(requiredField(sends[1]!.params.text), "result");
   assert.equal(f.token(sends[1], "Stop"), undefined);

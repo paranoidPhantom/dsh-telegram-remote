@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  displayToolName,
+  normalizeToolName,
   matchToolName,
   DEFAULT_TOOL_ICONS,
   DEFAULT_TOOL_EMOJI,
@@ -8,8 +10,96 @@ import {
   toolNameRulesSchema,
   toolEmojiHtml,
 } from "../src/rendering/tool-name.js";
-import { formatToolCall } from "../src/rendering/tool-format.js";
+import {
+  formatToolCall,
+  formatToolResult,
+} from "../src/rendering/tool-format.js";
+import { RunDelivery } from "../src/delivery/console-delivery.js";
+import type { DeliveryPort } from "../src/bot/contracts.js";
 import { toolLogPages } from "../src/rendering/console-render.js";
+
+test("display names strip namespaces, split words and use sentence case", () => {
+  for (const [name, expected] of [
+    ["plugin_manager", "Plugin manager"],
+    ["functions.plugin_manager", "Plugin manager"],
+    ["functions.mcp__packages__plugin_manager", "Plugin manager"],
+    ["mcp__context7__resolve-library-id", "Resolve library id"],
+    ["fs/readFile", "Read file"],
+    ["fs:readHTTPResponse", "Read http response"],
+    ["functions.XMLParser", "Xml parser"],
+    ["some__namespace__getURL", "Get url"],
+    ["  SOME-tool_name  ", "Some tool name"],
+    ["", ""],
+  ] as const) {
+    assert.equal(displayToolName(name), expected, name);
+  }
+  assert.equal(displayToolName(undefined), "");
+  assert.equal(displayToolName(null), "");
+  assert.equal(normalizeToolName("functions.readFile"), "readfile");
+});
+
+test("readable names agree in calls, results and logs without changing icon matching", () => {
+  const name = "functions.mcp__packages__pluginManager";
+  const rules = [{ pattern: name, emoji: "P", customEmojiId: "123" }];
+  assert.match(formatToolCall(name, {}, rules), /<b>Plugin manager<\/b>/);
+  assert.match(formatToolCall(name, {}, rules), /emoji-id="123"/);
+  assert.match(formatToolResult(name, "ok"), /<b>Plugin manager<\/b>/);
+  const log = toolLogPages(
+    [{ name, status: "completed" }],
+    true,
+    undefined,
+    undefined,
+    rules,
+  ).join("");
+  assert.match(log, /Plugin manager/);
+  assert.match(log, /emoji-id="123"/);
+  assert.doesNotMatch(log, /functions|mcp__|pluginManager/);
+  assert.match(formatToolCall("read", {}), /<b>Read file<\/b>/);
+  assert.match(formatToolResult("read", "ok"), /<b>Read file<\/b>/);
+  const changed = toolLogPages([
+    {
+      name: "mcp__fs__edit_file",
+      resultHtml: "Changes: kept",
+      status: "completed",
+    },
+  ]).join("");
+  assert.match(changed, /Edit file/);
+  assert.match(changed, /Changes: kept/);
+  assert.match(
+    formatToolCall("functions.<unsafe>_tool", {}),
+    /&lt;unsafe&gt; tool/,
+  );
+});
+
+test("drafts display readable names while retaining full-name icons and summary offsets", async () => {
+  const name = "functions.mcp__packages__pluginManager";
+  let draft: Record<string, unknown> | undefined;
+  const port = {
+    toolNameRules: [{ pattern: name, emoji: "📦", customEmojiId: "123" }],
+    params: (mapping: { chatId: number; threadId: number }) => ({
+      chat_id: mapping.chatId,
+      message_thread_id: mapping.threadId,
+    }),
+    api: {
+      call: async (method: string, payload: Record<string, unknown>) => {
+        assert.equal(method, "sendMessageDraft");
+        draft = payload;
+      },
+    },
+  } as unknown as DeliveryPort;
+  const row = { name, summary: "package.json" };
+  await new RunDelivery(port).preview(
+    { chatId: 1, threadId: 2 },
+    { id: "session", chatId: 1, threadId: 2, draftId: 3 },
+    { turn: 1, toolLog: [row] },
+  );
+  assert.equal(draft?.text, "📦 Plugin manager — package.json");
+  assert.deepEqual(draft?.entities, [
+    { type: "custom_emoji", offset: 0, length: 2, custom_emoji_id: "123" },
+    { type: "code", offset: "📦 Plugin manager — ".length, length: 12 },
+  ]);
+  assert.equal(row.name, name);
+});
 
 test("tool rules match normalized MCP and namespace names with ordered literal globs", () => {
   const rules = [

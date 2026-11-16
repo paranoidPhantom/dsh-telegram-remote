@@ -1,5 +1,6 @@
 import type { Translator } from "../i18n/bot-i18n.js";
 import {
+  displayToolName,
   normalizeToolName as normalize,
   toolEmojiHtml,
   type ToolNameRule,
@@ -274,7 +275,10 @@ function resultBody(input: unknown, blocks: Block[], depth = 0): void {
 export function formatToolResult(name: unknown, text: unknown): string {
   const normalized = normalize(name);
   const blocks = [
-    block(TITLES[normalized] || label(normalized || "Tool result"), "title"),
+    block(
+      TITLES[normalized] || displayToolName(name) || "Tool result",
+      "title",
+    ),
   ];
   resultBody(text, blocks);
   return render(blocks, LIMITS.result);
@@ -286,7 +290,7 @@ export function formatToolCall(
 ): string {
   const normalized = normalize(name);
   const blocks = [
-    block(TITLES[normalized] || label(normalized || "Tool call"), "title"),
+    block(TITLES[normalized] || displayToolName(name) || "Tool call", "title"),
   ];
   fields(parse(args), blocks);
   const prefix = `${toolEmojiHtml(name, rules)} `;

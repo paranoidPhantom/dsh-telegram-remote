@@ -34,8 +34,8 @@ test("assistant text seals previous log and subsequent tools start below it", as
   assert.ok(text);
   assert.ok(sentMessageId(newLog) > sentMessageId(text));
   assert.ok(newLog.params.text);
-  assert.ok(newLog.params.text.includes("ReadB"));
-  assert.ok(!newLog.params.text.includes("ReadA"));
+  assert.ok(newLog.params.text.includes("Read b"));
+  assert.ok(!newLog.params.text.includes("Read a"));
   assert.ok(
     !calls
       .slice(boundary)

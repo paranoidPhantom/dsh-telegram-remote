@@ -21,11 +21,37 @@ function fixture(t: TestContext) {
   const texts = () =>
     f.calls
       .filter(
-        (x) => x.method === "sendMessage" && x.params.text !== "Deep diving",
+        (x) =>
+          x.method === "sendMessage" &&
+          !x.params.text?.includes('emoji-id="5258121851091043775"'),
       )
       .map((x) => x.params.text);
   return { ...f, run, texts };
 }
+
+test("empty real placeholder is one custom emoji while native draft stays textual", async (t) => {
+  const f = fixture(t);
+  await f.run({});
+  const message = f.calls.find((c) => c.method === "sendMessage");
+  assert.ok(message);
+  assert.equal(
+    message.params.text,
+    '<tg-emoji emoji-id="5258121851091043775">⏳</tg-emoji>',
+  );
+  assert.equal(message.params.parse_mode, "HTML");
+  const draft = f.calls.find((c) => c.method === "sendMessageDraft");
+  assert.equal(draft?.params.text, "Deep diving");
+  assert.deepEqual(draft?.params.entities, []);
+  f.surface.draftsUnsupported = true;
+  await f.run({});
+  const edit = f.calls.filter((c) => c.method === "editMessageText").at(-1);
+  assert.equal(edit?.params.text, message.params.text);
+  assert.equal(edit?.params.parse_mode, "HTML");
+  await f.run({ partialAnswer: "<plain answer>" });
+  const answer = f.calls.filter((c) => c.method === "editMessageText").at(-1);
+  assert.equal(answer?.params.text, "<plain answer>");
+  assert.equal(answer?.params.parse_mode, undefined);
+});
 
 test("interstitial committed messages publish immediately, format, and dedupe frames/final", async (t) => {
   const f = fixture(t);
@@ -83,7 +109,7 @@ test("interstitial committed messages publish immediately, format, and dedupe fr
   );
   const drafts = f.calls.filter((x) => x.method === "sendMessageDraft");
   assert.ok(drafts.some((x) => x.params.text === "Deep diving"));
-  const toolDraft = drafts.find((x) => x.params.text === "🔩 tool");
+  const toolDraft = drafts.find((x) => x.params.text === "🔩 Tool");
   assert.ok(toolDraft);
   assert.deepEqual(toolDraft.params.entities, [
     {
@@ -95,7 +121,7 @@ test("interstitial committed messages publish immediately, format, and dedupe fr
   ]);
   assert.ok(
     drafts.every(
-      (x) => x.params.text === "Deep diving" || x.params.text === "🔩 tool",
+      (x) => x.params.text === "Deep diving" || x.params.text === "🔩 Tool",
     ),
   );
 });
@@ -141,7 +167,7 @@ test("cleanup and log failures never swallow durable output or final answer", as
     if (
       method === "editMessageReplyMarkup" ||
       method === "deleteMessage" ||
-      params.parse_mode === "HTML"
+      (params.parse_mode === "HTML" && params.text?.includes("<blockquote"))
     )
       throw Error("cosmetic failure");
     return original(method, params);
@@ -171,7 +197,7 @@ test("partial send failure preserves accepted chunk IDs and never ambiguously re
   f.api.call = async (method, params = {}) => {
     if (
       method === "sendMessage" &&
-      params.text !== "Deep diving" &&
+      !params.text?.includes('emoji-id="5258121851091043775"') &&
       ++attempts === 2
     )
       throw Error("ambiguous network failure");

@@ -32,6 +32,9 @@ const priorTurn = (candidate: TurnId, current: TurnId): boolean => {
     Number.isSafeInteger(before) && Number.isSafeInteger(now) && before < now
   );
 };
+// Telegram requires fallback text inside a custom-emoji entity.
+const EMPTY_MESSAGE_HTML =
+  '<tg-emoji emoji-id="5258121851091043775">⏳</tg-emoji>';
 const hasText = (text: unknown): text is string =>
   typeof text === "string" && Boolean(text.trim());
 const logRows = (view: RunView, delivery: RunReceipt) =>
@@ -44,7 +47,7 @@ const draftText = (view: RunView): string =>
     : view.answer || "";
 import { answerParts } from "../rendering/answer-format.js";
 import { relativePathText } from "../rendering/path-display.js";
-import { matchToolName } from "../rendering/tool-name.js";
+import { displayToolName, matchToolName } from "../rendering/tool-name.js";
 import {
   chunks,
   unsupportedDraft,
@@ -213,7 +216,9 @@ export class RunDelivery {
       ? relativePathText(latestTool.summary || "", view.cwd)
       : "";
     const icon = matchToolName(latestTool?.name, this.console.toolNameRules);
-    const prefix = latestTool ? `${icon.emoji} ${latestTool.name}` : "";
+    const prefix = latestTool
+      ? `${icon.emoji} ${displayToolName(latestTool.name) || "Tool"}`
+      : "";
     const previewText = latestTool
       ? `${prefix}${summary ? ` — ${summary}` : ""}`
       : draftText(view) || this.console.t("deepDiving");
@@ -269,7 +274,8 @@ export class RunDelivery {
       const sent = messageResult(
         await this.console.api.call("sendMessage", {
           ...this.console.params(mapping),
-          text: this.console.t("deepDiving"),
+          text: EMPTY_MESSAGE_HTML,
+          parse_mode: "HTML",
           disable_notification: true,
         }),
       );
@@ -277,8 +283,10 @@ export class RunDelivery {
       delivery.answerPreview = true;
     }
     const current = await this.console.mapping(delivery.id);
-    const text =
-      chunks(draftText(view) || this.console.t("deepDiving"))[0] ?? "";
+    const empty = !draftText(view);
+    const text = empty
+      ? EMPTY_MESSAGE_HTML
+      : (chunks(draftText(view))[0] ?? "");
     const controls = current?.latestControlMessageId === delivery.messageId;
     const key = this.pageKey(mapping, delivery.messageId);
     const signature = this.frame(text, [
@@ -298,6 +306,7 @@ export class RunDelivery {
       controls
         ? this.console.controls(delivery.id, mapping, true)
         : { inline_keyboard: [] },
+      empty ? "HTML" : undefined,
     );
     this.pageFrames.set(key, signature);
   }
@@ -604,7 +613,8 @@ export class RunDelivery {
             const sent = messageResult(
               await this.console.api.call("sendMessage", {
                 ...this.console.params(mapping),
-                text: this.console.t("deepDiving"),
+                text: EMPTY_MESSAGE_HTML,
+                parse_mode: "HTML",
                 disable_notification: true,
                 reply_markup: this.console.controls(id, mapping, true),
               }),

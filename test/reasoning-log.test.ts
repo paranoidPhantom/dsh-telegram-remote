@@ -72,7 +72,7 @@ test("reasoning is bounded, astral safe, idempotent and separate from tools/answ
     assert.ok(html.includes("🧠"));
     assert.ok(!html.includes("<inspect>"));
   }
-  assert.equal(runProjection.stateVersion, 8);
+  assert.equal(runProjection.stateVersion, 9);
   assert.ok(runProjection.stateSchema.safeParse(s).success);
 });
 
@@ -121,12 +121,12 @@ test("legacy in-flight receipts retain tool-only boundaries during upgrade", asy
     (c) =>
       c.params.parse_mode === "HTML" && c.params.text?.includes("blockquote"),
   );
-  assert.ok(logs.some((c) => c.params.text?.includes("write")));
+  assert.ok(logs.some((c) => c.params.text?.includes("Write")));
   assert.ok(
     logs.every(
       (c) =>
         !c.params.text?.includes("Do not backfill") &&
-        !c.params.text?.includes("read"),
+        !c.params.text?.includes("Read"),
     ),
   );
   assert.ok(f.calls.every((c) => c.params.message_id !== 99));
@@ -181,7 +181,7 @@ test("reasoning-only log is delivered before its answer and never in drafts; too
   const later = calls
     .slice(start)
     .filter((call) => call.params.parse_mode === "HTML");
-  assert.ok(later.some((call) => call.params.text?.includes("read")));
+  assert.ok(later.some((call) => call.params.text?.includes("Read")));
   assert.ok(later.every((call) => !call.params.text?.includes("Inspect")));
   assert.equal(
     calls.filter(

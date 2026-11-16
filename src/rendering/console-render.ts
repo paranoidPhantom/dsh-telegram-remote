@@ -1,5 +1,6 @@
 import { relativePathText } from "./path-display.js";
 import {
+  displayToolName,
   matchToolName,
   toolEmojiHtml,
   type ToolNameRule,
@@ -184,7 +185,7 @@ export function toolLogPages(
       /Changes|diff|Replace|With/.test(tool.resultHtml)
         ? `\n${tool.resultHtml}`
         : "";
-    return `${toolEmojiHtml(tool.name, rules)} ${icons[status] || "•"} ${preview(tool.name || "Tool", 70)} · ${html(t(status))}${summary}${detail}`;
+    return `${toolEmojiHtml(tool.name, rules)} ${icons[status] || "•"} ${preview(displayToolName(tool.name) || "Tool", 70)} · ${html(t(status))}${summary}${detail}`;
   });
   const pages: string[] = [];
   let page = "";

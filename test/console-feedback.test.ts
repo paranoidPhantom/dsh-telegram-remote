@@ -128,7 +128,7 @@ test("shell default uses the full ZWJ emoji UTF-16 span in drafts", async (t) =>
   const draft = required(
     f.calls.filter((c) => c.method === "sendMessageDraft").at(-1),
   );
-  assert.equal(draft.params.text, "👩‍💻 bash — npm test");
+  assert.equal(draft.params.text, "👩‍💻 Bash — npm test");
   const entities = requiredField(draft.params.entities);
   assert.deepEqual(entities[0], {
     type: "custom_emoji",
@@ -160,7 +160,7 @@ test("configured tool icons agree in native draft and sealed log with UTF-16 off
   const draft = required(
     f.calls.filter((c) => c.method === "sendMessageDraft").at(-1),
   );
-  assert.equal(draft.params.text, "📖 mcp__fs__read — notes.md");
+  assert.equal(draft.params.text, "📖 Read — notes.md");
   const entities = requiredField(draft.params.entities);
   assert.deepEqual(entities[0], {
     type: "custom_emoji",
@@ -673,11 +673,14 @@ test("latest tool stays in draft until the next tool flushes it and final retain
     !f.calls.some(
       (c) =>
         c.params.parse_mode === "HTML" &&
-        requiredField(c.params.text).includes("FirstTool"),
+        requiredField(c.params.text).includes("First tool"),
     ),
   );
   const draft = f.calls.filter((c) => c.method === "sendMessageDraft").at(-1)!;
-  assert.equal(requiredField(draft.params.text), "🔩 FirstTool — first action");
+  assert.equal(
+    requiredField(draft.params.text),
+    "🔩 First tool — first action",
+  );
   assert.deepEqual(requiredField(draft.params.entities), [
     {
       type: "custom_emoji",
@@ -685,7 +688,7 @@ test("latest tool stays in draft until the next tool flushes it and final retain
       length: 2,
       custom_emoji_id: "5260249805522744465",
     },
-    { type: "code", offset: 15, length: 12 },
+    { type: "code", offset: 16, length: 12 },
   ]);
 
   first.status = "completed";
@@ -700,14 +703,14 @@ test("latest tool stays in draft until the next tool flushes it and final retain
       (c) => c.method === "editMessageText" && c.params.message_id === logId,
     )
     .at(-1)!;
-  assert.match(requiredField(flushed.params.text), /✓ FirstTool/);
-  assert.ok(!requiredField(flushed.params.text).includes("SecondTool"));
+  assert.match(requiredField(flushed.params.text), /✓ First tool/);
+  assert.ok(!requiredField(flushed.params.text).includes("Second tool"));
   assert.equal(
     requiredField(
       f.calls.filter((c) => c.method === "sendMessageDraft").at(-1)!.params
         .text,
     ),
-    "🔩 SecondTool — second action",
+    "🔩 Second tool — second action",
   );
 
   second.status = "completed";
@@ -724,7 +727,7 @@ test("latest tool stays in draft until the next tool flushes it and final retain
     .at(-1)!;
   assert.match(
     requiredField(finalLog.params.text),
-    /✓ FirstTool.*✓ SecondTool/s,
+    /✓ First tool.*✓ Second tool/s,
   );
   assert.doesNotMatch(
     requiredField(finalLog.params.text),
@@ -758,7 +761,7 @@ test("large escaped logs paginate without dropping earlier tools and persist eve
   assert.ok(pages.length > 1);
   assert.ok(pages.every((page) => page.length <= 4096));
   for (let i = 0; i < toolLog.length; i++)
-    assert.equal(pages.join("\n").split(`tool-${i} ·`).length - 1, 1);
+    assert.equal(pages.join("\n").split(`Tool ${i} ·`).length - 1, 1);
   assert.match(pages[0]!, /truncated/);
   await f.console.onRun("s", { turn: 1, toolLog });
   assert.equal(
