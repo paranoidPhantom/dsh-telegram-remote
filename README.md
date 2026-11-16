@@ -8,10 +8,18 @@
 
 Control DeepSeek Harness from a private Telegram bot, built around **Telegram threads and modern native messaging features**.
 
-- **Threads by design:** each DSH session has its own private-chat topic. Open existing sessions on demand or start one with Telegram’s native **New Topic** action.
-- **Native streaming:** animated draft replies, Telegram’s Stop button, live tool previews, and typing indicators. Completed messages and stopped partial answers stay in the chat.
-- **Built for tool-heavy work:** a pinned conversation checklist updated in place across turns; compact, collapsed tool logs; updates coalesced per session; only changed log pages are edited; independent draft/edit scheduling across topics with flood-control backoff.
-- **Controls where you work:** informative approvals with colored buttons, in-place model/reasoning-effort selection and existing-workspace selection for new sessions, pinned session details, queue steering, and native photo/video/audio or document delivery.
+## Features
+
+- **Session topics:** open existing DSH sessions on demand or create one through Telegram’s native **New Topic** action.
+- **Native streaming:** draft replies, Telegram’s Stop button, live tool previews, and best-effort typing indicators. Completed messages and stopped partial answers stay in the chat.
+- **Model controls:** choose providers, models, and supported reasoning-effort levels in place, including the model’s default effort.
+- **Workspace selection:** choose an existing DSH workspace when creating a session.
+- **Pinned checklists:** the first todo list is pinned; later updates edit the same message across conversation turns.
+- **Readable activity logs:** collapsed tool logs with truncated model-reasoning previews and configurable custom emoji icons.
+- **Interactive approvals:** review the requested operation and approve or reject it with colored buttons.
+- **Session controls:** pinned session details, queue steering, and topic management. Ending a Telegram topic does not delete or stop its DSH session.
+- **File delivery:** receive supported photos, video, and audio natively, or download documents and files touched during a turn.
+- **Localized and efficient:** English, Chinese, and Russian UI; coalesced progress updates, independent topic scheduling, and rate-limit backoff.
 
 ## Preview
 
@@ -28,3 +36,7 @@ Control DeepSeek Harness from a private Telegram bot, built around **Telegram th
 5. Open your bot and send `/start`. Use `/sessions` or Telegram’s **New Topic** to begin.
 
 DSH must remain running: Telegram networking runs in a child process supervised by the DSH plugin, not an independent daemon. Only the configured admin can control the bot.
+
+## Contributing
+
+Pull requests and feature requests are welcome! [Open a pull request](https://github.com/paranoidPhantom/dsh-telegram-remote/pulls) or [suggest a feature](https://github.com/paranoidPhantom/dsh-telegram-remote/issues).

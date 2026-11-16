@@ -174,7 +174,13 @@ test("READMEs cross-link all languages and retain the same minimal installation 
     const value = await readFile(new URL(name, root), "utf8");
     for (const link of ["README.md", "README.zh-CN.md", "README.ru.md"])
       assert.ok(value.includes(`](${link})`));
-    assert.equal((value.match(/^- /gm) || []).length, 4);
+    assert.equal((value.match(/^- /gm) || []).length, 10);
+    for (const section of ["/pulls", "/issues"])
+      assert.ok(
+        value.includes(
+          `https://github.com/paranoidPhantom/dsh-telegram-remote${section}`,
+        ),
+      );
     assert.equal((value.match(/^\d\. /gm) || []).length, 5);
     for (const token of [
       "dsh-telegram-remote",
