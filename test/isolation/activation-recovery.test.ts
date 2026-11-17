@@ -225,7 +225,11 @@ test("a persisted epoch of zero is not silently replaced during activation", asy
 
 class ActivationPeer extends RpcPeer {
   constructor(
-    readonly invoke: (method: string, payload: JsonValue) => Promise<JsonValue>,
+    readonly invoke: (
+      method: string,
+      payload: JsonValue,
+      options?: RpcRequestOptions,
+    ) => Promise<JsonValue>,
   ) {
     super({ transport: new ControlledTransport(), generation: "test" });
   }
@@ -234,7 +238,7 @@ class ActivationPeer extends RpcPeer {
     payload: JsonValue,
     _options?: RpcRequestOptions,
   ): Promise<JsonValue> {
-    return this.invoke(method, payload);
+    return this.invoke(method, payload, _options);
   }
 }
 class FakeSupervisor implements SupervisorPort {
@@ -244,13 +248,24 @@ class FakeSupervisor implements SupervisorPort {
   peer: RpcPeer;
   constructor(
     readonly options: SupervisorOptions,
-    invoke: (method: string, payload: JsonValue) => Promise<JsonValue>,
+    invoke: (
+      method: string,
+      payload: JsonValue,
+      options?: RpcRequestOptions,
+    ) => Promise<JsonValue>,
   ) {
     this.peer = new ActivationPeer(invoke);
   }
   async start() {
     this.state = "running";
     this.options.onReady?.(this.peer);
+  }
+  recoveries = 0;
+  recover(expectedPeer: RpcPeer): boolean {
+    if (this.peer !== expectedPeer || this.state !== "running") return false;
+    this.recoveries++;
+    this.state = "backoff";
+    return true;
   }
   async close() {
     this.state = "closed";
@@ -267,7 +282,11 @@ class FakeSupervisor implements SupervisorPort {
 }
 
 async function activeFixture(
-  invoke: (method: string, payload: JsonValue) => Promise<JsonValue>,
+  invoke: (
+    method: string,
+    payload: JsonValue,
+    options?: RpcRequestOptions,
+  ) => Promise<JsonValue>,
   setup?: (mock: ReturnType<typeof fixture>) => void,
 ) {
   const directory = await mkdtemp(join(tmpdir(), "telegram-active-recovery-"));
@@ -376,6 +395,52 @@ test(
         async () => "unavailable",
       );
       assert.equal(result, "cancelled");
+    } finally {
+      await mock.cleanup();
+    }
+  },
+);
+
+test(
+  "initialization has an explicit network-aware deadline and budgeted recovery",
+  deadlockGuard,
+  async () => {
+    const mock = await activeFixture(async (method, _payload, options) => {
+      if (method === "runtime.initialize") {
+        assert.equal(options?.timeoutMs, 180_000);
+        throw Object.assign(new Error("slow startup"), { code: "TIMEOUT" });
+      }
+      return null;
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(mock.supervisor.recoveries, 1);
+      assert.equal(mock.supervisor.state, "backoff");
+    } finally {
+      await mock.cleanup();
+    }
+  },
+);
+
+test(
+  "uncertain replay keeps initialized worker online without cursor advance or recovery",
+  deadlockGuard,
+  async () => {
+    let sends = 0;
+    const mock = await activeFixture(async (method, _payload, options) => {
+      if (method === "run.push") {
+        sends++;
+        assert.equal(options?.timeoutMs, 300_000);
+        throw Object.assign(new Error("uncertain send"), { code: "TIMEOUT" });
+      }
+      return null;
+    }, replaySetup);
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(sends, 1);
+      assert.equal(mock.supervisor.state, "running");
+      assert.equal(mock.supervisor.recoveries, 0);
+      assert.equal(mock.rows.has("console:source:s"), false);
     } finally {
       await mock.cleanup();
     }

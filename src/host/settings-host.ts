@@ -90,10 +90,16 @@ export function createSettingsController({
   };
 }
 
+export interface SettingsRouteOptions {
+  /** Already-safe generated JSON only; never read raw logs or credentials here. */
+  getDebugLog?(): string | Promise<string>;
+}
+
 /** Harness owns Host/Origin trust, including trusted Desktop origins. */
 export function registerSettingsRoute(
   ctx: SettingsRouteContext,
   controller: SettingsController,
+  options: SettingsRouteOptions = {},
 ): unknown {
   return ctx.effect(() =>
     ctx.webServer.register({
@@ -151,6 +157,25 @@ export function registerSettingsRoute(
           },
         );
         try {
+          if (
+            request.method === "GET" &&
+            new URL(request.url).searchParams.get("debug") === "1"
+          ) {
+            try {
+              const debugLog = await options.getDebugLog?.();
+              if (
+                typeof debugLog !== "string" ||
+                Buffer.byteLength(debugLog, "utf8") > 100_000
+              ) {
+                throw Error("Invalid debug export");
+              }
+              end(200, { debugLog });
+            } catch {
+              // Export failures may contain sensitive details; never echo them.
+              end(503, { error: "Unable to export debug log." });
+            }
+            return;
+          }
           if (request.method === "GET") {
             end(200, await controller.read());
             return;

@@ -26,6 +26,7 @@ export interface SupervisorPort {
   readonly pid: number | undefined;
   readonly peer: RpcPeer | undefined;
   start(): Promise<void>;
+  recover(expectedPeer: RpcPeer): boolean;
   close(): Promise<void>;
 }
 export interface ActivationDependencies {

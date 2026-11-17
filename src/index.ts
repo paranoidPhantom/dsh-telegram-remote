@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { toolNameRulesSchema } from "./rendering/tool-name.js";
-import { readFile, writeFile, chmod, unlink, access } from "node:fs/promises";
+import { readFile, chmod, unlink, access } from "node:fs/promises";
 import { dirname, resolve, basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,12 @@ import { HostAuthority } from "./host/authority.js";
 import { ApprovalRegistry } from "./host/approvals.js";
 import { registerApprovalForwarding } from "./host/approval-forwarding.js";
 import { RuntimeDiagnosticsPoller } from "./host/diagnostics.js";
+import { RuntimeStatusWriter } from "./host/runtime-status.js";
+import {
+  startupEventSchema,
+  startupFailure,
+  type StartupEvent,
+} from "./protocol/startup.js";
 import { ResourceRegistry } from "./host/resources.js";
 import { Inbox } from "./host/inbox.js";
 import { BotLease } from "./host/lease.js";
@@ -48,6 +54,12 @@ import {
 } from "./protocol/json.js";
 import type { RpcHandler, RpcPeer } from "./protocol/rpc.js";
 import { foldRun, initialRun } from "./projection/run-projection.js";
+
+// Initialization includes two sequential 40s Telegram requests plus bounded Host RPCs.
+export const INITIALIZE_TIMEOUT_MS = 180_000;
+// Delivery ACKs include paced sends, log sealing and global Telegram cooldowns.
+// A timeout is uncertain, never permission to resend or restart the worker.
+export const DELIVERY_TIMEOUT_MS = 300_000;
 
 export const inject = [
   "tools",
@@ -121,39 +133,44 @@ export async function apply<Handle>(
   const approvals = new ApprovalRegistry(),
     resources = new ResourceRegistry(),
     widgetResources = new WidgetResourceAccess<Handle>();
-  const status = async (state: string) =>
-    writeFile(
-      statusPath,
-      JSON.stringify(
-        {
-          version,
-          startedAt,
-          pid: process.pid,
-          ownerId,
-          ownerEpoch,
-          state,
-          lastError,
-          supervisorState: supervisor?.state ?? "idle",
-          childPid: supervisor?.pid ?? null,
-          generation: supervisor?.currentGeneration ?? null,
-          diagnostics:
-            supervisor?.state === "running"
-              ? diagnostics.snapshot(supervisor.currentGeneration)
-              : null,
-        },
-        null,
-        2,
-      ),
-      { mode: 0o600 },
-    );
+  let statusState = "starting";
+  const statusWriter = new RuntimeStatusWriter(statusPath, () => ({
+    version,
+    startedAt,
+    updatedAt: new Date().toISOString(),
+    pid: process.pid,
+    platform: process.platform,
+    arch: process.arch,
+    nodeVersion: process.versions.node,
+    electronVersion: process.versions.electron ?? null,
+    ownerId,
+    ownerEpoch,
+    state: statusState,
+    lastError,
+    supervisorState: supervisor?.state ?? "idle",
+    childPid: supervisor?.pid ?? null,
+    generation: supervisor?.currentGeneration ?? null,
+    diagnostics:
+      supervisor?.state === "running"
+        ? diagnostics.snapshot(supervisor.currentGeneration)
+        : null,
+  }));
+  const trace = (event: StartupEvent) => {
+    void statusWriter.record("host", event).catch(() => {});
+  };
+  const status = (state: string) => {
+    statusState = state;
+    return statusWriter.flush();
+  };
   const diagnostics = new RuntimeDiagnosticsPoller({
     peer: () => readyPeer,
     onSample: () => {
-      void status("running").catch(() => {});
+      void statusWriter.flush().catch(() => {});
     },
   });
   lifecycle.own(() => diagnostics.close());
   diagnostics.start();
+  trace({ stage: "activation", outcome: "begin" });
   // Deliberately do not retain arbitrary backend error strings: they may contain credentials.
   const report = () => {
     lastError = "Telegram isolated runtime operation failed";
@@ -221,7 +238,10 @@ export async function apply<Handle>(
       bytes = Buffer.from(text);
     if (bytes.length < 192 * 1024) {
       const result = object(
-        await peer.request("run.push", payload, { signal }),
+        await peer.request("run.push", payload, {
+          signal,
+          timeoutMs: DELIVERY_TIMEOUT_MS,
+        }),
       );
       if (result.status !== "delivered" && result.status !== "detached")
         throw new ProtocolError(
@@ -247,7 +267,14 @@ export async function apply<Handle>(
         { signal },
       );
     const result = object(
-      await peer.request("run.chunk.commit", { transferId }, { signal }),
+      await peer.request(
+        "run.chunk.commit",
+        { transferId },
+        {
+          signal,
+          timeoutMs: DELIVERY_TIMEOUT_MS,
+        },
+      ),
     );
     if (result.status !== "delivered" && result.status !== "detached")
       throw new ProtocolError(
@@ -325,11 +352,23 @@ export async function apply<Handle>(
           throw error;
       }
     }
-    domain = await ctx.storageDomain.open({
-      name: "telegram_console_delivery",
-      version: 1,
-      tables: { delivery: { valueSchema: z.json() } },
-    });
+    trace({ stage: "storage", outcome: "begin" });
+    domain = await ctx.storageDomain
+      .open({
+        name: "telegram_console_delivery",
+        version: 1,
+        tables: { delivery: { valueSchema: z.json() } },
+      })
+      .catch((error: unknown) => {
+        trace({
+          stage: "storage",
+          outcome: "failed",
+          ...startupFailure(error),
+        });
+        throw error;
+      });
+    trace({ stage: "storage", outcome: "ok" });
+    trace({ stage: "configuration", outcome: "begin" });
     const table = domain.table("delivery");
     const store = {
       get: (key: string) => table.get(key),
@@ -438,8 +477,26 @@ export async function apply<Handle>(
             "AUTHORITY_DENIED",
             "Host authority unavailable",
           );
-        return handler(payload, rpcSignal);
+        try {
+          return await handler(payload, rpcSignal);
+        } catch (error) {
+          if (name === "credentials.read")
+            trace({
+              stage: "credential-read",
+              outcome: "failed",
+              ...startupFailure(error),
+            });
+          throw error;
+        }
       };
+    handlers["runtime.startup"] = async (payload) => {
+      const p = fence(payload);
+      const { generation: _generation, ownerEpoch: _epoch, ...event } = p;
+      await statusWriter
+        .record("child", startupEventSchema.parse(event))
+        .catch(() => {});
+      return null;
+    };
     handlers["inbox.offset"] = async (payload) => {
       fence(payload);
       return inbox.offset();
@@ -523,7 +580,10 @@ export async function apply<Handle>(
         () => {},
         () => {},
       );
-      await operation;
+      await operation.catch((error: unknown) => {
+        trace({ stage: "lease", outcome: "failed", ...startupFailure(error) });
+        throw error;
+      });
       return { acquired: true };
     };
     handlers["widgets.canonicalize"] = async (payload) => {
@@ -676,6 +736,7 @@ export async function apply<Handle>(
     };
     const rotate = (): Promise<void> => {
       const operation = rotation.then(async () => {
+        trace({ stage: "rotation", outcome: "begin" });
         readyPeer = undefined;
         authority?.close();
         authority = undefined;
@@ -685,17 +746,47 @@ export async function apply<Handle>(
         lease = undefined;
         leasedBot = undefined;
         if (signal.aborted) return;
-        if (
-          ownerId <= 0 ||
-          !(await ctx.credentials.describeRecord(config.credentialKey))
-            .configured
-        ) {
+        trace({ stage: "credential-check", outcome: "begin" });
+        let configured: boolean;
+        try {
+          configured =
+            ownerId > 0 &&
+            (await ctx.credentials.describeRecord(config.credentialKey))
+              .configured;
+          trace({
+            stage: "credential-check",
+            outcome: configured ? "ok" : "skipped",
+            ...(!configured ? { code: "NOT_CONFIGURED" as const } : {}),
+          });
+        } catch (error) {
+          trace({
+            stage: "credential-check",
+            outcome: "failed",
+            ...startupFailure(error),
+          });
+          throw error;
+        }
+        if (!configured) {
+          trace({
+            stage: "rotation",
+            outcome: "skipped",
+            code: "NOT_CONFIGURED",
+          });
           await status("unconfigured");
           return;
         }
-        const credential = await ctx.credentials.readRecord(
-          config.credentialKey,
-        );
+        trace({ stage: "credential-read", outcome: "begin" });
+        const credential = await ctx.credentials
+          .readRecord(config.credentialKey)
+          .catch((error: unknown) => {
+            trace({
+              stage: "credential-read",
+              outcome: "failed",
+              ...startupFailure(error),
+            });
+            throw error;
+          });
+        trace({ stage: "credential-read", outcome: "ok" });
         const pinnedCredential =
           credential?.kind === "api-key" && credential.key
             ? { kind: "api-key", key: credential.key }
@@ -707,12 +798,14 @@ export async function apply<Handle>(
           entry: new URL("./child/index.js", import.meta.url),
           build: version,
           handlers,
+          onStartup: trace,
           onOffline: report,
           onReady: (peer) => {
             if (signal.aborted || supervisor !== current) return;
             readyPeer = undefined;
             authority?.close();
-            generation = current.currentGeneration;
+            const launchGeneration = current.currentGeneration;
+            generation = launchGeneration;
             authority = new HostAuthority({
               bridge: remoteBridge,
               store,
@@ -724,8 +817,10 @@ export async function apply<Handle>(
               approvals,
               resources,
             });
+            let startupPhase: "initialize" | "replay" = "initialize";
             void lifecycle.launch(
               (async () => {
+                trace({ stage: "initialize", outcome: "begin" });
                 await peer.request(
                   "runtime.initialize",
                   {
@@ -735,33 +830,58 @@ export async function apply<Handle>(
                     version,
                     toolNameRules,
                   },
-                  { signal },
+                  { signal, timeoutMs: INITIALIZE_TIMEOUT_MS },
                 );
                 if (
                   supervisor !== current ||
-                  generation !== current.currentGeneration ||
+                  generation !== launchGeneration ||
+                  current.currentGeneration !== launchGeneration ||
+                  current.peer !== peer ||
                   signal.aborted
                 )
                   return;
+                trace({ stage: "initialize", outcome: "ok" });
                 readyPeer = peer;
+                startupPhase = "replay";
+                trace({ stage: "replay", outcome: "begin" });
                 await replay(peer);
+                if (
+                  signal.aborted ||
+                  supervisor !== current ||
+                  readyPeer !== peer ||
+                  current.peer !== peer ||
+                  generation !== launchGeneration ||
+                  current.currentGeneration !== launchGeneration
+                )
+                  return;
+                trace({ stage: "replay", outcome: "ok" });
+                trace({ stage: "ready", outcome: "ok" });
                 lastError = null;
                 await status("running");
-              })().catch(async () => {
-                report();
+              })().catch(async (error: unknown) => {
+                trace({
+                  stage: startupPhase,
+                  outcome: "failed",
+                  ...startupFailure(error),
+                });
+                // Ignore late failures from a rotated/unloaded generation.
                 if (
-                  supervisor === current &&
-                  current.peer === peer &&
-                  current.state === "running"
-                ) {
+                  signal.aborted ||
+                  supervisor !== current ||
+                  current.peer !== peer
+                )
+                  return;
+                report();
+                if (startupPhase === "initialize") {
                   readyPeer = undefined;
                   authority?.close();
-                  await current.close();
-                  await leaseTail;
-                  await lease?.close();
-                  lease = undefined;
-                  leasedBot = undefined;
+                  // Keep the Host lease until the owned worker has exited. Recovery
+                  // uses the supervisor's bounded restart budget, not a fresh loop.
+                  current.recover(peer);
                 }
+                // Replay may contain an accepted-but-unacknowledged Telegram send.
+                // Keep polling/control RPCs alive; never restart/resend blindly.
+                // The cursor stays unadvanced and delivery receipts retain uncertainty.
               }),
             );
           },
@@ -770,7 +890,12 @@ export async function apply<Handle>(
         await status("connecting");
         await current.start();
       });
-      rotation = operation.catch(() => {
+      rotation = operation.catch((error: unknown) => {
+        trace({
+          stage: "rotation",
+          outcome: "failed",
+          ...startupFailure(error),
+        });
         report();
       });
       return operation;
@@ -796,7 +921,9 @@ export async function apply<Handle>(
         await rotate();
       },
     });
-    registerSettingsRoute(ctx, settings);
+    registerSettingsRoute(ctx, settings, {
+      getDebugLog: () => statusWriter.debugLog(),
+    });
     let lastLocale = dshLocale(ctx);
     const localeTimer = setInterval(() => {
       if (signal.aborted || !readyPeer) return;
@@ -953,8 +1080,11 @@ export async function apply<Handle>(
         },
       }),
     );
+    trace({ stage: "configuration", outcome: "ok" });
+    trace({ stage: "activation", outcome: "ok" });
     await rotate();
   } catch (error) {
+    trace({ stage: "activation", outcome: "failed", ...startupFailure(error) });
     await close();
     throw error;
   }

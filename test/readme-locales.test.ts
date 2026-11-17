@@ -11,6 +11,7 @@ interface Node {
     value?: string;
     onChange?: (event: { target: { value: string } }) => void;
     onSubmit?: (event: { preventDefault(): void }) => Promise<void>;
+    onClick?: () => Promise<void>;
     [key: string]: unknown;
   };
   children: Child[];
@@ -45,6 +46,10 @@ function harness(locale: string | undefined = "en") {
     ok: true,
     value: { locale, adminUserId: 123, tokenConfigured: true },
   };
+  const clipboard: string[] = [];
+  let clipboardFailure = false;
+  let releaseClipboard: (() => void) | undefined;
+  let clipboardPending = false;
   const React = {
     createElement: (
       type: string,
@@ -78,6 +83,18 @@ function harness(locale: string | undefined = "en") {
         },
       },
     },
+    navigator: {
+      clipboard: {
+        writeText: async (value: string) => {
+          if (clipboardFailure) throw Error("private clipboard detail");
+          if (clipboardPending)
+            await new Promise<void>((resolve) => {
+              releaseClipboard = resolve;
+            });
+          clipboard.push(value);
+        },
+      },
+    },
     fetch: async (url: string, options: RequestInit) => {
       requests.push({ url, options });
       return {
@@ -105,6 +122,17 @@ function harness(locale: string | undefined = "en") {
   assert.equal(requests.length, 0, "apply must not request settings");
   return {
     requests,
+    clipboard,
+    failClipboard() {
+      clipboardFailure = true;
+    },
+    pauseClipboard() {
+      clipboardPending = true;
+    },
+    resumeClipboard() {
+      assert.ok(releaseClipboard);
+      releaseClipboard();
+    },
     get registration() {
       assert.ok(registration);
       return registration;
@@ -220,8 +248,78 @@ test("settings language comes from Host locale with regional normalization and E
     );
     app.cleanup();
   }
-  assert.ok(!source.includes("navigator"));
+  assert.ok(!source.includes("navigator.language"));
 });
+test("debug copy fetches only authenticated export and has independent busy and success UI", async () => {
+  const app = harness("en");
+  let tree = await app.mount();
+  change(element(tree, "input", 1), "unsaved-token");
+  tree = app.render();
+  app.respond({ debugLog: '{"safe":true}' });
+  app.pauseClipboard();
+  const button = element(tree, "button", 1);
+  assert.ok(button.props.onClick);
+  const pending = button.props.onClick();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  tree = app.render();
+  assert.equal(element(tree, "button", 1).props.disabled, true);
+  assert.ok(text(tree).includes("Copying…"));
+  assert.equal(element(tree, "button").props.disabled, false);
+  assert.equal(element(tree, "input", 1).props.value, "unsaved-token");
+  const request = app.requests[1];
+  assert.ok(request);
+  assert.equal(request.url, "/telegram-console/settings?debug=1");
+  assert.equal(request.options.credentials, "same-origin");
+  assert.equal(request.options.cache, "no-store");
+  assert.equal(request.options.body, undefined);
+  app.respond({ locale: "en", adminUserId: 123, tokenConfigured: true });
+  await submit(tree);
+  assert.ok(text(app.render()).includes("Saved."));
+  app.resumeClipboard();
+  await pending;
+  tree = app.render();
+  assert.deepEqual(app.clipboard, ['{"safe":true}']);
+  assert.ok(text(tree).includes("Debug log copied."));
+  assert.ok(text(tree).includes("Saved."));
+  assert.equal(element(tree, "button", 1).props.disabled, false);
+});
+
+test("debug copy localizes success and failures without displaying backend details", async () => {
+  for (const [locale, success, failure] of [
+    ["zh", "调试日志已复制。", "无法复制调试日志。"],
+    [
+      "ru",
+      "Журнал отладки скопирован.",
+      "Не удалось скопировать журнал отладки.",
+    ],
+  ]) {
+    const app = harness(locale);
+    let tree = await app.mount();
+    app.respond({ debugLog: "{}" });
+    await element(tree, "button", 1).props.onClick?.();
+    tree = app.render();
+    assert.ok(text(tree).includes(success as string));
+    for (const [value, ok] of [
+      [{ error: "secret backend detail" }, false],
+      [{ debugLog: 42 }, true],
+    ] as const) {
+      app.respond(value, ok);
+      await element(tree, "button", 1).props.onClick?.();
+      tree = app.render();
+      assert.ok(text(tree).includes(failure as string));
+      assert.ok(!text(tree).includes("secret backend detail"));
+      assert.equal(element(tree, "button", 1).props.disabled, false);
+    }
+    app.respond({ debugLog: "{}" });
+    app.failClipboard();
+    await element(tree, "button", 1).props.onClick?.();
+    tree = app.render();
+    assert.ok(text(tree).includes(failure as string));
+    assert.ok(!text(tree).includes("private clipboard detail"));
+    assert.equal(app.clipboard.length, 1);
+  }
+});
+
 test("localized errors preserve unsaved token; successful save clears it", async () => {
   const app = harness("zh");
   let tree = await app.mount();

@@ -7,6 +7,12 @@ import {
   type RpcHandler,
   type WireTransport,
 } from "../protocol/rpc.js";
+import {
+  observeStartup,
+  startupFailure,
+  type StartupObserver,
+  type StartupEvent,
+} from "../protocol/startup.js";
 import { launchChild } from "./launcher.js";
 
 export type SupervisorState =
@@ -29,6 +35,7 @@ export interface SupervisorOptions {
   restartBaseMs?: number;
   launch?: typeof fork;
   handlers?: Record<string, RpcHandler>;
+  onStartup?: StartupObserver;
   onReady?: (peer: RpcPeer) => void;
   onOffline?: (error: Error) => void;
 }
@@ -139,6 +146,29 @@ export class ChildSupervisor {
     return startup;
   }
 
+  /**
+   * Recover an established worker after Host initialization fails. The exact peer
+   * fences late failures from an older worker; repeated/stale calls are no-ops.
+   * Acceptance revokes RPC immediately, but replacement waits for owned exit and
+   * uses the same restart window, budget and backoff as an unexpected exit.
+   */
+  recover(expectedPeer: RpcPeer): boolean {
+    const owned = this.current;
+    if (
+      this.status !== "running" ||
+      !owned?.accepted ||
+      owned.exited ||
+      owned.peer !== expectedPeer
+    )
+      return false;
+    this.status = "backoff";
+    owned.peer.close();
+    void this.terminate(owned).catch(() =>
+      this.offline(failure("TERMINATION_FAILED", "Worker did not exit")),
+    );
+    return true;
+  }
+
   private spawn(): Promise<void> {
     // Explicit generations are deterministic test/integration fences. Production
     // launches without one rotate on every process replacement.
@@ -146,14 +176,34 @@ export class ChildSupervisor {
     this.status = "starting";
     return new Promise<void>((resolve, reject) => {
       let child: ChildProcess;
+      observeStartup(this.options.onStartup, {
+        stage: "launch",
+        outcome: "begin",
+      });
       try {
         child = launchChild({ ...this.options, generation: this.generation });
       } catch {
         const error = failure("LAUNCH_FAILED", "Worker launch failed");
+        observeStartup(this.options.onStartup, {
+          stage: "launch",
+          outcome: "failed",
+          ...startupFailure(error),
+        });
         this.offline(error);
         reject(error);
         return;
       }
+      observeStartup(this.options.onStartup, {
+        stage: "launch",
+        outcome: "ok",
+        ...(Number.isSafeInteger(child.pid) && child.pid! > 0
+          ? { pid: child.pid }
+          : {}),
+      });
+      observeStartup(this.options.onStartup, {
+        stage: "handshake",
+        outcome: "begin",
+      });
       const transport = createProcessTransport(child);
       let owned: OwnedChild;
       let helloSeen = false;
@@ -179,6 +229,10 @@ export class ChildSupervisor {
             if (this.current !== owned || this.status !== "starting") return;
             this.status = "running";
             this.starting = undefined;
+            observeStartup(this.options.onStartup, {
+              stage: "handshake",
+              outcome: "ok",
+            });
             resolve();
             try {
               this.options.onReady?.(owned.peer);
@@ -234,9 +288,23 @@ export class ChildSupervisor {
         rejectStartup: reject,
       };
       this.current = owned;
-      const exited = () => {
+      const exited = (code: number | null, signal: NodeJS.Signals | null) => {
         if (owned.exited) return;
         owned.exited = true;
+        const safeSignal = [
+          "SIGTERM",
+          "SIGKILL",
+          "SIGABRT",
+          "SIGSEGV",
+          "SIGINT",
+          "SIGHUP",
+        ].find((allowed) => allowed === signal) as StartupEvent["signal"];
+        observeStartup(this.options.onStartup, {
+          stage: "exit",
+          outcome: "info",
+          ...(Number.isSafeInteger(code) ? { exitCode: code! } : {}),
+          ...(safeSignal ? { signal: safeSignal } : {}),
+        });
         if (owned.startupTimer) clearTimeout(owned.startupTimer);
         owned.startupTimer = undefined;
         resolveExit();
@@ -254,13 +322,29 @@ export class ChildSupervisor {
             "STARTUP_EXIT",
             "Worker exited before handshake",
           );
+          observeStartup(this.options.onStartup, {
+            stage: "handshake",
+            outcome: "failed",
+            ...startupFailure(error),
+          });
           reject(error);
           this.offline(error);
         } else this.restart();
       };
       child.once("exit", exited);
       child.once("close", exited); // Spawn failure has no exit event.
+      child.once("disconnect", () => {
+        observeStartup(this.options.onStartup, {
+          stage: "disconnect",
+          outcome: "info",
+        });
+      });
       child.on("error", () => {
+        observeStartup(this.options.onStartup, {
+          stage: "runtime-error",
+          outcome: "failed",
+          code: owned.accepted ? "TRANSPORT_ERROR" : "LAUNCH_FAILED",
+        });
         if (!owned.accepted)
           this.startupFailed(
             owned,
@@ -332,6 +416,11 @@ export class ChildSupervisor {
     if (this.current !== owned || this.status !== "starting") return;
     if (owned.startupTimer) clearTimeout(owned.startupTimer);
     owned.startupTimer = undefined;
+    observeStartup(this.options.onStartup, {
+      stage: "handshake",
+      outcome: "failed",
+      ...startupFailure(error),
+    });
     owned.rejectStartup(error);
     this.offline(error);
     // Set offline before closing the pipe; its synchronous close notification
@@ -361,6 +450,11 @@ export class ChildSupervisor {
       (time) => now - time < this.windowMs,
     );
     if (this.restartTimes.length >= this.restarts) {
+      observeStartup(this.options.onStartup, {
+        stage: "restart",
+        outcome: "failed",
+        code: "RESTART_BUDGET",
+      });
       this.offline(
         failure("RESTART_BUDGET", "Worker restart budget exhausted"),
       );
@@ -372,6 +466,14 @@ export class ChildSupervisor {
     );
     this.restartTimes.push(now);
     this.status = "backoff";
+    observeStartup(this.options.onStartup, {
+      stage: "restart",
+      outcome: "info",
+      delayMs: delay,
+    });
+    // A startup observer can synchronously unload the owner. Close wins even
+    // when it races the restart diagnostic, before the timer is registered.
+    if (this.status !== "backoff" || this.current) return;
     this.restartTimer = setTimeout(() => {
       this.restartTimer = undefined;
       if (this.status !== "backoff" || this.current) return;
@@ -405,6 +507,10 @@ export class ChildSupervisor {
     if (this.status === "closed") return Promise.resolve();
     const owned = this.current;
     this.status = "closing";
+    observeStartup(this.options.onStartup, {
+      stage: "shutdown",
+      outcome: "begin",
+    });
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = undefined;
     if (owned?.startupTimer) clearTimeout(owned.startupTimer);
@@ -424,6 +530,10 @@ export class ChildSupervisor {
           }
           if (!owned.exited) await this.terminate(owned);
         }
+        observeStartup(this.options.onStartup, {
+          stage: "shutdown",
+          outcome: "ok",
+        });
       } finally {
         owned?.peer.close();
         if (owned?.exited) this.current = undefined;

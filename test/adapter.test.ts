@@ -6,6 +6,57 @@ import {
   type TelegramAdapterOptions,
 } from "../src/telegram/adapter.js";
 import { required } from "./fixture-assertions.js";
+import type { StartupEvent } from "../src/protocol/startup.js";
+
+test("startup credential diagnostics are awaited, classified and omit polling", async () => {
+  const events: StartupEvent[] = [];
+  let reads = 0;
+  const api = new TelegramAdapter({
+    credentials: {
+      readRecord: async () => {
+        reads++;
+        if (reads === 2)
+          throw Object.assign(Error("secret path"), { code: "EACCES" });
+        return { kind: "api-key", key: "123:fake" };
+      },
+    },
+    credentialKey: "bot",
+    onStartup: async (event) => {
+      events.push(event);
+    },
+    createApi: () => ({
+      getMe: async () => ({ id: 1 }),
+      getUpdates: async () => [],
+    }),
+  });
+  await api.call("getMe");
+  await assert.rejects(api.call("getWebhookInfo"));
+  await api.call("getUpdates", {});
+  assert.deepEqual(
+    events.map(({ stage, outcome, code }) => [stage, outcome, code]),
+    [
+      ["credential-read", "begin", undefined],
+      ["credential-read", "ok", undefined],
+      ["credential-read", "begin", undefined],
+      ["credential-read", "failed", "EACCES"],
+    ],
+  );
+  assert.doesNotMatch(JSON.stringify(events), /secret|path|123:fake/);
+});
+
+test("credential startup observer rejection does not prevent API calls", async () => {
+  const api = new TelegramAdapter({
+    credentials: {
+      readRecord: async () => ({ kind: "api-key", key: "123:fake" }),
+    },
+    credentialKey: "bot",
+    onStartup: async () => {
+      throw Error("observer failed");
+    },
+    createApi: () => ({ getMe: async () => ({ id: 1 }) }),
+  });
+  assert.deepEqual(await api.call("getMe"), { id: 1 });
+});
 type ApiParams = Record<string, unknown>;
 
 type Call = {

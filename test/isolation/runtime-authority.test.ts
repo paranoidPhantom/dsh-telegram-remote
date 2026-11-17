@@ -337,11 +337,20 @@ function fixture(t: TestContext) {
   };
 }
 
-test("startup replaces owner command menus before polling and locale changes refresh them", async (t) => {
+async function eventually(condition: () => boolean): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(condition(), "background command registration did not settle");
+}
+
+test("startup refreshes owner command menus without blocking polling and locale changes refresh them", async (t) => {
   const f = fixture(t);
   await f.initialize();
   await f.waitPolling();
   const menus = () => f.apiCalls.filter((c) => c.method === "setMyCommands");
+  await eventually(() => menus().length === 4);
   assert.equal(menus().length, 4);
   const schema = z.object({
     scope: z.object({ type: z.literal("chat"), chat_id: z.literal(ownerId) }),
@@ -375,7 +384,7 @@ test("startup replaces owner command menus before polling and locale changes ref
     ["", "en", "zh", "ru"],
   );
   assert.ok(
-    f.apiCalls.findIndex((c) => c.method === "getUpdates") >
+    f.apiCalls.findIndex((c) => c.method === "getUpdates") <
       f.apiCalls.findLastIndex((c) => c.method === "setMyCommands"),
   );
   await f.host.request("settings.update", { locale: "ru-RU" });
@@ -405,6 +414,7 @@ test("menu registration failure reports error without preventing startup and pol
   };
   await f.initialize();
   await f.waitPolling();
+  await eventually(() => f.errors.length === 1);
   assert.equal(f.errors.length, 1);
   assert.ok(f.apiCalls.some((c) => c.method === "getUpdates"));
 });

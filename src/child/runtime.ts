@@ -11,6 +11,11 @@ import { UpdateIngress } from "./ingress.js";
 import { compileWidget } from "../widgets/compiler.js";
 import { WidgetDelivery } from "../widgets/widget-delivery.js";
 import { createTranslator } from "../i18n/bot-i18n.js";
+import {
+  startupEventSchema,
+  startupFailure,
+  type StartupEvent,
+} from "../protocol/startup.js";
 
 const initializeSchema = z.object({
   ownerId: z.number().int().nonnegative(),
@@ -167,6 +172,7 @@ export class ChildRuntime {
   private readonly approvalActors = new WeakMap<object, ActorOperationScope>();
   private closing?: Promise<void>;
   private commandSync: Promise<void> = Promise.resolve();
+  private startupUnavailable = false;
   private readonly transfers = new Map<
     string,
     { parts: string[]; count: number; bytes: number; expires: number }
@@ -324,125 +330,211 @@ export class ChildRuntime {
       { signal: this.controller.signal },
     );
   }
+  /** Await diagnostics before proceeding, but never let an unavailable Host stall startup. */
+  private async startup(event: StartupEvent): Promise<void> {
+    if (this.startupUnavailable) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const value = startupEventSchema.parse(event);
+      await Promise.race([
+        this.options.peer.request(
+          "runtime.startup",
+          {
+            generation: this.options.generation,
+            ownerEpoch: this.settings?.ownerEpoch ?? 0,
+            ...value,
+          },
+          { signal: controller.signal, timeoutMs: 250 },
+        ),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            this.startupUnavailable = true;
+            controller.abort();
+            resolve();
+          }, 250);
+        }),
+      ]);
+    } catch {
+      this.startupUnavailable = true;
+      /* Older Hosts and test peers may not support diagnostics. */
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  private async startupStage<T>(
+    stage: StartupEvent["stage"],
+    operation: () => T | Promise<T>,
+    detail: Pick<StartupEvent, "language"> = {},
+  ): Promise<T> {
+    await this.startup({ stage, outcome: "begin", ...detail });
+    const start = performance.now();
+    try {
+      const result = await operation();
+      await this.startup({
+        stage,
+        outcome: "ok",
+        durationMs: Math.max(0, Math.floor(performance.now() - start)),
+        ...detail,
+      });
+      return result;
+    } catch (error) {
+      await this.startup({
+        stage,
+        outcome: "failed",
+        durationMs: Math.max(0, Math.floor(performance.now() - start)),
+        ...startupFailure(error),
+        ...detail,
+      });
+      throw error;
+    }
+  }
   private async initialize(payload: JsonValue): Promise<JsonValue> {
     if (this.settings || this.controller.signal.aborted)
       throw new Error("Child runtime cannot initialize twice");
-    this.settings = initializeSchema.parse(payload);
-    this.port = createHostPort({
-      peer: this.options.peer,
-      generation: this.options.generation,
-      ownerEpoch: this.settings.ownerEpoch,
-      scope: () => this.scope.getStore(),
-      signal: this.controller.signal,
+    const settings = initializeSchema.parse(payload);
+    this.settings = settings;
+    await this.startupStage("surface", () => {
+      this.port = createHostPort({
+        peer: this.options.peer,
+        generation: this.options.generation,
+        ownerEpoch: settings.ownerEpoch,
+        scope: () => this.scope.getStore(),
+        signal: this.controller.signal,
+      });
+      this.adapter = (
+        this.options.adapterFactory ??
+        ((options) => new TelegramAdapter(options))
+      )({
+        credentials: this.port.credentials,
+        credentialKey: "telegram-console/bot",
+        signal: this.controller.signal,
+        onSendStart: () => this.sampleSend(),
+        onStartup: (event) => this.startup(event),
+      });
+      // Adapter validates Telegram method payloads at its boundary. The console's
+      // narrower union is deliberately routed through its untyped wire method.
+      const api: TelegramApiPort = {
+        call: (method, params) => this.adapterCall(method, params ?? {}),
+        document: (file) => this.adapterFile(file),
+        typing: (params) => {
+          if (!this.adapter || typeof params.chat_id !== "number")
+            return Promise.resolve();
+          return this.adapter.typing({
+            chat_id: params.chat_id,
+            ...(params.message_thread_id
+              ? { message_thread_id: params.message_thread_id }
+              : {}),
+          });
+        },
+      };
+      this.surface = new TelegramConsole({
+        api,
+        bridge: this.port.bridge,
+        store: this.port.store,
+        ownerId: settings.ownerId,
+        signal: this.controller.signal,
+        getLocale: () => this.settings?.locale,
+        toolNameRules: settings.toolNameRules,
+      });
+      this.surface.runtimeVersion = settings.version;
+      this.surface.runtimePid = process.ppid;
+      this.surface.runtimeIdentity = {
+        hostPid: process.ppid,
+        childPid: process.pid,
+        build: this.options.build,
+        generation: this.options.generation,
+      };
     });
-    this.adapter = (
-      this.options.adapterFactory ?? ((options) => new TelegramAdapter(options))
-    )({
-      credentials: this.port.credentials,
-      credentialKey: "telegram-console/bot",
-      signal: this.controller.signal,
-      onSendStart: () => this.sampleSend(),
-    });
-    // Adapter validates Telegram method payloads at its boundary. The console's
-    // narrower union is deliberately routed through its untyped wire method.
-    const api: TelegramApiPort = {
-      call: (method, params) => this.adapterCall(method, params ?? {}),
-      document: (file) => this.adapterFile(file),
-      typing: (params) => {
-        if (!this.adapter || typeof params.chat_id !== "number")
-          return Promise.resolve();
-        return this.adapter.typing({
-          chat_id: params.chat_id,
-          ...(params.message_thread_id
-            ? { message_thread_id: params.message_thread_id }
-            : {}),
-        });
-      },
-    };
-    this.surface = new TelegramConsole({
-      api,
-      bridge: this.port.bridge,
-      store: this.port.store,
-      ownerId: this.settings.ownerId,
-      signal: this.controller.signal,
-      getLocale: () => this.settings?.locale,
-      toolNameRules: this.settings.toolNameRules,
-    });
-    this.surface.runtimeVersion = this.settings.version;
-    this.surface.runtimePid = process.ppid;
-    this.surface.runtimeIdentity = {
-      hostPid: process.ppid,
-      childPid: process.pid,
-      build: this.options.build,
-      generation: this.options.generation,
-    };
-    const me = z
-      .object({ id: z.number().int(), username: z.string().optional() })
-      .parse(await this.adapter.call("getMe"));
-    const webhook = z
-      .object({ url: z.string() })
-      .parse(await this.adapter.call("getWebhookInfo"));
-    if (webhook.url)
-      throw new Error("Telegram webhook must be removed before polling");
-    z.object({ acquired: z.literal(true) }).parse(
-      await this.request("runtime.acquireLease", { botId: me.id }),
+    const me = await this.startupStage("getMe", async () =>
+      z
+        .object({ id: z.number().int(), username: z.string().optional() })
+        .parse(await this.adapter!.call("getMe")),
     );
-    this.surface.username = me.username ?? "";
-    await this.syncCommands();
-    this.ingress = new UpdateIngress({
-      api: {
-        call: async (_method, params) =>
-          json(await this.adapterCall("getUpdates", params)),
-      },
-      admit: async (update) =>
-        z
-          .enum(["admitted", "duplicate", "ignored"])
-          .parse(await this.request("inbox.admit", { update })),
-      getOffset: async () =>
-        z
-          .number()
-          .int()
-          .nonnegative()
-          .parse(await this.request("inbox.offset")),
-      pending: async () =>
-        z
-          .array(
-            z.object({
-              updateId: z.number().int(),
-              ownerEpoch: z.number().int(),
-              operation: z.json(),
-              status: z
-                .enum(["pending", "completed", "failed", "uncertain"])
-                .optional(),
-            }),
-          )
-          .parse(await this.request("inbox.pending")),
-      settle: async (entry, outcome) => {
-        await this.request("inbox.settle", {
-          updateId: entry.updateId,
-          ownerEpoch: entry.ownerEpoch,
-          outcome,
-        });
-      },
-      handle: async (operation) => this.handleUpdate(operation),
-      classify: (operation) => this.classify(operation),
-      signal: this.controller.signal,
-      onError: (error) => this.options.onError?.(error),
+    const webhook = await this.startupStage("getWebhookInfo", async () =>
+      z
+        .object({ url: z.string() })
+        .parse(await this.adapter!.call("getWebhookInfo")),
+    );
+    await this.startupStage("webhook-check", () => {
+      if (webhook.url)
+        throw Object.assign(
+          new Error("Telegram webhook must be removed before polling"),
+          { code: "WEBHOOK_CONFIGURED" },
+        );
     });
-    void this.track(this.ingress.run()).catch((error) =>
+    await this.startupStage("lease", async () =>
+      z
+        .object({ acquired: z.literal(true) })
+        .parse(await this.request("runtime.acquireLease", { botId: me.id })),
+    );
+    this.surface!.username = me.username ?? "";
+    await this.startupStage("ingress", () => {
+      this.ingress = new UpdateIngress({
+        api: {
+          call: async (_method, params) =>
+            json(await this.adapterCall("getUpdates", params)),
+        },
+        admit: async (update) =>
+          z
+            .enum(["admitted", "duplicate", "ignored"])
+            .parse(await this.request("inbox.admit", { update })),
+        getOffset: async () =>
+          z
+            .number()
+            .int()
+            .nonnegative()
+            .parse(await this.request("inbox.offset")),
+        pending: async () =>
+          z
+            .array(
+              z.object({
+                updateId: z.number().int(),
+                ownerEpoch: z.number().int(),
+                operation: z.json(),
+                status: z
+                  .enum(["pending", "completed", "failed", "uncertain"])
+                  .optional(),
+              }),
+            )
+            .parse(await this.request("inbox.pending")),
+        settle: async (entry, outcome) => {
+          await this.request("inbox.settle", {
+            updateId: entry.updateId,
+            ownerEpoch: entry.ownerEpoch,
+            outcome,
+          });
+        },
+        handle: async (operation) => this.handleUpdate(operation),
+        classify: (operation) => this.classify(operation),
+        signal: this.controller.signal,
+        onError: (error) => this.options.onError?.(error),
+      });
+      void this.track(this.ingress.run()).catch((error) =>
+        this.options.onError?.(error),
+      );
+      this.heartbeat = setInterval(() => {
+        if (this.surface)
+          void this.track(this.surface.delivery.refreshDrafts()).catch(
+            (error) => this.options.onError?.(error),
+          );
+      }, 3000);
+    });
+    // Cosmetic command registration must not hold initialization or polling
+    // behind four serial network requests. Track it for owned shutdown/drain.
+    void this.track(this.syncCommands()).catch((error) =>
       this.options.onError?.(error),
     );
-    this.heartbeat = setInterval(() => {
-      if (this.surface)
-        void this.track(this.surface.delivery.refreshDrafts()).catch((error) =>
-          this.options.onError?.(error),
-        );
-    }, 3000);
     return { initialized: true };
   }
   private syncCommands(): Promise<void> {
     const settings = this.settings;
-    if (!settings || settings.ownerId <= 0) return Promise.resolve();
+    if (!settings || settings.ownerId <= 0)
+      return this.startup({
+        stage: "commands",
+        outcome: "skipped",
+        code: "NOT_CONFIGURED",
+      });
     const t = createTranslator(() => settings.locale);
     const params = {
       scope: { type: "chat" as const, chat_id: settings.ownerId },
@@ -460,17 +552,28 @@ export class ChildRuntime {
     };
     this.commandSync = this.commandSync.then(async () => {
       try {
-        for (const language_code of ["", "en", "zh", "ru"]) {
-          if (this.controller.signal.aborted) return;
-          const accepted = await this.adapter?.call("setMyCommands", {
-            ...params,
-            language_code,
-          });
-          if (accepted !== true)
-            throw new Error(
-              "Telegram command registration was not acknowledged",
+        await this.startupStage("commands", async () => {
+          for (const language_code of ["", "en", "zh", "ru"] as const) {
+            this.controller.signal.throwIfAborted();
+            await this.startupStage(
+              "setMyCommands",
+              async () => {
+                const accepted = await this.adapter?.call("setMyCommands", {
+                  ...params,
+                  language_code,
+                });
+                if (accepted !== true)
+                  throw Object.assign(
+                    new Error(
+                      "Telegram command registration was not acknowledged",
+                    ),
+                    { code: "NOT_ACKNOWLEDGED" },
+                  );
+              },
+              { language: language_code },
             );
-        }
+          }
+        });
       } catch (error) {
         // Menu cosmetics must not take down polling; retry at next startup/locale change.
         this.options.onError?.(error);

@@ -14,6 +14,10 @@
       loading: "Loading\u2026",
       saving: "Saving\u2026",
       save: "Save",
+      copyDebugLog: "Copy debug log",
+      debugCopying: "Copying\u2026",
+      debugCopied: "Debug log copied.",
+      debugCopyError: "Unable to copy debug log.",
       saved: "Saved. The admin ID applies immediately; token changes are read on the next API request.",
       loadError: "Unable to load settings.",
       saveError: "Unable to save settings.",
@@ -38,6 +42,10 @@
       loading: "\u52A0\u8F7D\u4E2D\u2026",
       saving: "\u4FDD\u5B58\u4E2D\u2026",
       save: "\u4FDD\u5B58",
+      copyDebugLog: "\u590D\u5236\u8C03\u8BD5\u65E5\u5FD7",
+      debugCopying: "\u590D\u5236\u4E2D\u2026",
+      debugCopied: "\u8C03\u8BD5\u65E5\u5FD7\u5DF2\u590D\u5236\u3002",
+      debugCopyError: "\u65E0\u6CD5\u590D\u5236\u8C03\u8BD5\u65E5\u5FD7\u3002",
       saved: "\u5DF2\u4FDD\u5B58\u3002\u7BA1\u7406\u5458 ID \u7ACB\u5373\u751F\u6548\uFF1B\u4EE4\u724C\u66F4\u6539\u5C06\u5728\u4E0B\u4E00\u6B21 API \u8BF7\u6C42\u65F6\u4F7F\u7528\u3002",
       loadError: "\u65E0\u6CD5\u52A0\u8F7D\u8BBE\u7F6E\u3002",
       saveError: "\u65E0\u6CD5\u4FDD\u5B58\u8BBE\u7F6E\u3002",
@@ -62,6 +70,10 @@
       loading: "\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430\u2026",
       saving: "\u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u0435\u2026",
       save: "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C",
+      copyDebugLog: "\u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0436\u0443\u0440\u043D\u0430\u043B \u043E\u0442\u043B\u0430\u0434\u043A\u0438",
+      debugCopying: "\u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u0435\u2026",
+      debugCopied: "\u0416\u0443\u0440\u043D\u0430\u043B \u043E\u0442\u043B\u0430\u0434\u043A\u0438 \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D.",
+      debugCopyError: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0436\u0443\u0440\u043D\u0430\u043B \u043E\u0442\u043B\u0430\u0434\u043A\u0438.",
       saved: "\u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u043E. ID \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440\u0430 \u043F\u0440\u0438\u043C\u0435\u043D\u044F\u0435\u0442\u0441\u044F \u0441\u0440\u0430\u0437\u0443; \u043D\u043E\u0432\u044B\u0439 \u0442\u043E\u043A\u0435\u043D \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0435\u0442\u0441\u044F \u043F\u0440\u0438 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u043C \u0437\u0430\u043F\u0440\u043E\u0441\u0435 API.",
       loadError: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438.",
       saveError: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438.",
@@ -96,7 +108,7 @@
     const h = React.createElement;
     let locale = "en";
     function Settings() {
-      const [language, setLanguage] = React.useState(locale), [admin, setAdmin] = React.useState(""), [token, setToken] = React.useState(""), [configured, setConfigured] = React.useState(false), [busy, setBusy] = React.useState(true), [saving, setSaving] = React.useState(false), [note, setNote] = React.useState(null);
+      const [language, setLanguage] = React.useState(locale), [admin, setAdmin] = React.useState(""), [token, setToken] = React.useState(""), [configured, setConfigured] = React.useState(false), [busy, setBusy] = React.useState(true), [saving, setSaving] = React.useState(false), [note, setNote] = React.useState(null), [copying, setCopying] = React.useState(false), [copyNote, setCopyNote] = React.useState(null);
       const text = messages[language];
       function acceptLocale(value) {
         locale = normalizeLocale(value.locale);
@@ -165,6 +177,28 @@
         } finally {
           setBusy(false);
           setSaving(false);
+        }
+      }
+      async function copyDebugLog() {
+        if (copying) return;
+        setCopying(true);
+        setCopyNote(null);
+        try {
+          const response = await fetch("/telegram-console/settings?debug=1", {
+            credentials: "same-origin",
+            cache: "no-store"
+          });
+          if (!response.ok) throw Error("Debug export failed");
+          const value = await response.json();
+          if (!value || typeof value !== "object" || !("debugLog" in value) || typeof value.debugLog !== "string") {
+            throw Error("Invalid debug export");
+          }
+          await navigator.clipboard.writeText(value.debugLog);
+          setCopyNote("debugCopied");
+        } catch {
+          setCopyNote("debugCopyError");
+        } finally {
+          setCopying(false);
         }
       }
       const input = {
@@ -249,6 +283,16 @@
             { role: "status", "aria-live": "polite" },
             note ? text[note.key] + (note.details ? " " + note.details : "") : ""
           )
+        ),
+        h(
+          "button",
+          { type: "button", disabled: copying, onClick: copyDebugLog },
+          copying ? text.debugCopying : text.copyDebugLog
+        ),
+        h(
+          "p",
+          { role: "status", "aria-live": "polite" },
+          copyNote ? text[copyNote] : ""
         )
       );
     }

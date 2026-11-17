@@ -7,6 +7,11 @@ import {
   type Update,
 } from "node-telegram-bot-api";
 import { mediaKind } from "../files/media-kind.js";
+import {
+  startupEventSchema,
+  startupFailure,
+  type StartupEvent,
+} from "../protocol/startup.js";
 import https from "node:https";
 import { Readable } from "node:stream";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
@@ -53,6 +58,8 @@ export interface TelegramAdapterOptions {
   createApi?: CreateTelegramApi;
   /** Numeric-only instrumentation; invoked at send wire-start after scheduler waits. */
   onSendStart?: () => void;
+  /** Startup methods only; never emits credentials, API payloads or polling events. */
+  onStartup?: (event: StartupEvent) => void | Promise<void>;
   now?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<unknown>;
 }
@@ -227,6 +234,15 @@ export class TelegramAdapter {
   readonly now: () => number;
   readonly sleep: (ms: number, signal?: AbortSignal) => Promise<unknown>;
   private readonly onSendStart?: () => void;
+  private readonly onStartup?: TelegramAdapterOptions["onStartup"];
+
+  private async startup(event: StartupEvent): Promise<void> {
+    try {
+      await this.onStartup?.(startupEventSchema.parse(event));
+    } catch {
+      /* Observers cannot prevent Telegram startup. */
+    }
+  }
   rateLimitCount = 0;
   rateLimitLastWaitMs = 0;
   rateLimitMaxWaitMs = 0;
@@ -242,6 +258,7 @@ export class TelegramAdapter {
     signal,
     createApi = (token, options) => new Api(token, options),
     onSendStart,
+    onStartup,
     now = Date.now,
     sleep = (ms, signal) => delay(ms, undefined, { signal }),
   }: TelegramAdapterOptions) {
@@ -250,6 +267,7 @@ export class TelegramAdapter {
     this.signal = signal;
     this.createApi = createApi;
     this.onSendStart = onSendStart;
+    this.onStartup = onStartup;
     this.now = now;
     this.sleep = sleep;
   }
@@ -411,10 +429,37 @@ export class TelegramAdapter {
       this.signal?.throwIfAborted();
       // Resolve credentials only after every scheduling wait: queued work must
       // observe rotation/revocation instead of carrying a stale token to the wire.
-      const record = await this.credentials.readRecord(this.credentialKey);
-      this.signal?.throwIfAborted();
-      if (record?.kind !== "api-key" || !record.key) {
-        throw Error("Telegram bot credential is not configured");
+      const diagnostic = ["getMe", "getWebhookInfo", "setMyCommands"].includes(
+        method,
+      );
+      if (diagnostic)
+        await this.startup({ stage: "credential-read", outcome: "begin" });
+      const started = performance.now();
+      let record: Awaited<ReturnType<TelegramCredentials["readRecord"]>>;
+      try {
+        record = await this.credentials.readRecord(this.credentialKey);
+        this.signal?.throwIfAborted();
+        if (record?.kind !== "api-key" || !record.key) {
+          throw Object.assign(
+            Error("Telegram bot credential is not configured"),
+            { code: "NOT_CONFIGURED" },
+          );
+        }
+        if (diagnostic)
+          await this.startup({
+            stage: "credential-read",
+            outcome: "ok",
+            durationMs: Math.max(0, Math.floor(performance.now() - started)),
+          });
+      } catch (error) {
+        if (diagnostic)
+          await this.startup({
+            stage: "credential-read",
+            outcome: "failed",
+            durationMs: Math.max(0, Math.floor(performance.now() - started)),
+            ...startupFailure(error),
+          });
+        throw error;
       }
       // Never retry non-idempotent sends after ambiguous transport failure.
       const api = this.createApi(record.key, {
@@ -454,7 +499,12 @@ export class TelegramAdapter {
         fields.description ?? fields.message ?? "Telegram request failed",
       ).replaceAll(token, "[redacted]");
       const safe = new TelegramRequestError(`${method}: ${message}`);
+      // Preserve only classified metadata when SDK wrappers hide transport causes.
+      const failure = startupFailure(error);
+      safe.cause = { code: failure.statusCode ?? failure.code };
       safe.code = fields.errorCode ?? fields.code;
+      if (safe.code === undefined && failure.code !== "UNKNOWN")
+        safe.code = failure.statusCode ?? failure.code;
       if (
         Number(safe.code) === 429 ||
         /\b429\b|too many requests|retry[ _-]?after/i.test(message)

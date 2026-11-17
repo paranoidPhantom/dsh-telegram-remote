@@ -47,7 +47,9 @@ export function applySettings(
       [configured, setConfigured] = React.useState(false),
       [busy, setBusy] = React.useState(true),
       [saving, setSaving] = React.useState(false),
-      [note, setNote] = React.useState<Note | null>(null);
+      [note, setNote] = React.useState<Note | null>(null),
+      [copying, setCopying] = React.useState(false),
+      [copyNote, setCopyNote] = React.useState<MessageKey | null>(null);
     const text = messages[language];
     function acceptLocale(value: SettingsResponse) {
       locale = normalizeLocale(value.locale);
@@ -122,6 +124,34 @@ export function applySettings(
       } finally {
         setBusy(false);
         setSaving(false);
+      }
+    }
+    async function copyDebugLog() {
+      if (copying) return;
+      setCopying(true);
+      setCopyNote(null);
+      try {
+        const response = await fetch("/telegram-console/settings?debug=1", {
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        if (!response.ok) throw Error("Debug export failed");
+        const value: unknown = await response.json();
+        if (
+          !value ||
+          typeof value !== "object" ||
+          !("debugLog" in value) ||
+          typeof value.debugLog !== "string"
+        ) {
+          throw Error("Invalid debug export");
+        }
+        await navigator.clipboard.writeText(value.debugLog);
+        setCopyNote("debugCopied");
+      } catch {
+        // Do not display backend/clipboard exception details or exported content.
+        setCopyNote("debugCopyError");
+      } finally {
+        setCopying(false);
       }
     }
     const input: CSSProperties = {
@@ -208,6 +238,16 @@ export function applySettings(
           { role: "status", "aria-live": "polite" },
           note ? text[note.key] + (note.details ? " " + note.details : "") : "",
         ),
+      ),
+      h(
+        "button",
+        { type: "button", disabled: copying, onClick: copyDebugLog },
+        copying ? text.debugCopying : text.copyDebugLog,
+      ),
+      h(
+        "p",
+        { role: "status", "aria-live": "polite" },
+        copyNote ? text[copyNote] : "",
       ),
     );
   }

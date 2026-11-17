@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -141,6 +141,23 @@ test("locked activation owns all registrations and supports unload/reload", asyn
         credentialKey: "telegram-console/bot",
         statusPath: join(directory, "status.json"),
       });
+      const debug = JSON.parse(
+        await readFile(join(directory, "status.json"), "utf8"),
+      );
+      assert.equal(debug.state, "unconfigured");
+      assert.ok(debug.updatedAt);
+      assert.ok(
+        debug.startupLog.some(
+          (event: { stage: string; outcome: string }) =>
+            event.stage === "credential-check" && event.outcome === "skipped",
+        ),
+      );
+      assert.ok(
+        debug.startupLog.some(
+          (event: { stage: string; outcome: string }) =>
+            event.stage === "activation" && event.outcome === "ok",
+        ),
+      );
       assert.equal(mock.projections, 1);
       assert.equal(mock.domains, 1);
       assert.ok(mock.route);

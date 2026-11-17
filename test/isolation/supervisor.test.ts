@@ -7,6 +7,10 @@ import { performance } from "node:perf_hooks";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ChildSupervisor } from "../../src/host/supervisor.js";
+import {
+  type StartupEvent,
+  type StartupObserver,
+} from "../../src/protocol/startup.js";
 
 const ENTRY = new URL("./fixtures/supervisor-worker.js", import.meta.url);
 const BUILD = "supervisor-contract-test-build";
@@ -65,6 +69,7 @@ interface Options {
   maxRestarts?: number;
   restartBaseMs?: number;
   alternateCwd?: boolean;
+  onStartup?: StartupObserver;
 }
 
 async function setup(t: TestContext, options: Options = {}) {
@@ -77,6 +82,7 @@ async function setup(t: TestContext, options: Options = {}) {
   const readyWaiters: { count: number; resolve: () => void }[] = [];
   const readyEvents: unknown[] = [];
   const offlineEvents: Error[] = [];
+  const startupEvents: StartupEvent[] = [];
   let supervisor: ChildSupervisor | undefined;
   let cleaningUp = false;
 
@@ -139,6 +145,12 @@ async function setup(t: TestContext, options: Options = {}) {
     );
     assert.equal(supplied?.env?.TELEGRAM_BOT_TOKEN, undefined);
     assert.equal(supplied?.env?.DSH_CREDENTIAL_SECRET, undefined);
+    for (const previous of owned) {
+      assert.ok(
+        previous.child.exitCode !== null || previous.child.signalCode !== null,
+        "replacement must never launch before the previous owned worker exits",
+      );
+    }
     launchTimes.push(performance.now());
     const child = fork(
       modulePath,
@@ -176,6 +188,10 @@ async function setup(t: TestContext, options: Options = {}) {
     restartWindowMs: 60_000,
     restartBaseMs: options.restartBaseMs ?? 40,
     launch,
+    onStartup: (event) => {
+      startupEvents.push(event);
+      options.onStartup?.(event);
+    },
     onReady: (peer: unknown) => {
       readyEvents.push(peer);
       ready.resolve();
@@ -221,6 +237,7 @@ async function setup(t: TestContext, options: Options = {}) {
     launchTimes,
     offline,
     offlineEvents,
+    startupEvents,
     readyEvents,
     events,
     directory,
@@ -306,6 +323,23 @@ test(
     assert.equal(h.supervisor.pid, undefined);
     assert.equal(h.owned.length, 1);
     assert.deepEqual(h.offlineEvents, []);
+    assert.deepEqual(h.startupEvents.slice(0, 4), [
+      { stage: "launch", outcome: "begin" },
+      { stage: "launch", outcome: "ok", pid: child.child.pid },
+      { stage: "handshake", outcome: "begin" },
+      { stage: "handshake", outcome: "ok" },
+    ]);
+    assert.deepEqual(
+      h.startupEvents.filter((event) => event.stage === "shutdown"),
+      [
+        { stage: "shutdown", outcome: "begin" },
+        { stage: "shutdown", outcome: "ok" },
+      ],
+    );
+    assert.deepEqual(
+      h.startupEvents.filter((event) => event.stage === "exit"),
+      [{ stage: "exit", outcome: "info", exitCode: 0 }],
+    );
   },
 );
 
@@ -333,6 +367,10 @@ test(
       "shutdown",
       "sigterm",
     ]);
+    assert.deepEqual(
+      h.startupEvents.filter((event) => event.stage === "exit"),
+      [{ stage: "exit", outcome: "info", signal: "SIGKILL" }],
+    );
     assert.equal(child.child.signalCode, "SIGKILL");
     assert.equal(h.supervisor.state, "closed");
     assert.equal(h.supervisor.pid, undefined);
@@ -371,6 +409,17 @@ for (const mode of [
       );
       assert.equal(h.owned.length, 1);
       assert.equal(h.supervisor.pid, undefined);
+      assert.deepEqual(
+        h.startupEvents.filter((event) => event.stage === "handshake"),
+        [
+          { stage: "handshake", outcome: "begin" },
+          {
+            stage: "handshake",
+            outcome: "failed",
+            code: mode === "no-hello" ? "STARTUP_TIMEOUT" : "INVALID_HELLO",
+          },
+        ],
+      );
     },
   );
 }
@@ -394,6 +443,10 @@ test(
       signal: null,
     });
     await bounded(h.offline.promise, "disconnect exhausts zero-restart budget");
+    assert.deepEqual(
+      h.startupEvents.filter((event) => event.stage === "disconnect"),
+      [{ stage: "disconnect", outcome: "info" }],
+    );
     assert.equal(h.supervisor.state, "offline");
     assert.equal(h.supervisor.peer, undefined);
     assert.equal(h.owned.length, 1);
@@ -455,5 +508,216 @@ test(
       "offline close cancels further restarts",
     );
     assert.equal(h.owned.length, 3);
+    assert.deepEqual(
+      h.startupEvents.filter((event) => event.stage === "restart"),
+      [
+        { stage: "restart", outcome: "info", delayMs: 40 },
+        { stage: "restart", outcome: "info", delayMs: 80 },
+        { stage: "restart", outcome: "failed", code: "RESTART_BUDGET" },
+      ],
+    );
+    assert.equal(
+      h.startupEvents.filter(
+        (event) => event.stage === "exit" && event.exitCode === 23,
+      ).length,
+      3,
+    );
+  },
+);
+
+test(
+  "explicit recovery fences stale peers and shares crash restart budget and backoff",
+  { timeout: TEST_TIMEOUT },
+  async (t) => {
+    const h = await setup(t, { maxRestarts: 2 });
+    await h.start();
+    const first = h.supervisor.peer!;
+    await bounded(first.request("fixture.inspect", null), "first worker gate");
+    const recoveryAt = performance.now();
+    assert.equal(h.supervisor.recover(first), true);
+    assert.equal(h.supervisor.state, "backoff");
+    assert.equal(h.supervisor.peer, undefined);
+    assert.equal(h.supervisor.recover(first), false, "duplicate is a no-op");
+    await assert.rejects(first.request("fixture.inspect", null), {
+      code: "CLOSED",
+    });
+    await bounded(h.owned[0]!.exit, "recovery reaps original");
+    await bounded(h.waitForReady(2), "recovery replacement");
+    assert.ok(h.launchTimes[1]! - recoveryAt >= 35);
+    const second = h.supervisor.peer!;
+    assert.notEqual(second, first);
+    assert.equal(
+      h.supervisor.recover(first),
+      false,
+      "stale peer cannot kill replacement",
+    );
+    assert.equal(h.supervisor.peer, second);
+
+    // Mix an actual crash with explicit recovery: neither path resets budget.
+    const crashAt = performance.now();
+    await assert.rejects(second.request("fixture.crash", null));
+    await bounded(h.waitForReady(3), "crash replacement after recovery");
+    assert.ok(h.launchTimes[2]! - crashAt >= 75);
+    const third = h.supervisor.peer!;
+    assert.equal(h.supervisor.recover(third), true);
+    await bounded(h.offline.promise, "recovery exhausts shared budget");
+    assert.equal(h.supervisor.state, "offline");
+    assert.equal(h.supervisor.recover(third), false);
+    assert.equal(h.owned.length, 3);
+    assert.equal(h.offlineEvents.length, 1);
+    assert.deepEqual(
+      h.startupEvents.filter((event) => event.stage === "restart"),
+      [
+        { stage: "restart", outcome: "info", delayMs: 40 },
+        { stage: "restart", outcome: "info", delayMs: 80 },
+        { stage: "restart", outcome: "failed", code: "RESTART_BUDGET" },
+      ],
+    );
+  },
+);
+
+test(
+  "close racing accepted recovery wins without launching a replacement",
+  { timeout: TEST_TIMEOUT },
+  async (t) => {
+    const h = await setup(t, { maxRestarts: 2 });
+    await h.start();
+    const peer = h.supervisor.peer!;
+    await bounded(
+      peer.request("fixture.inspect", null),
+      "close race worker gate",
+    );
+    assert.equal(h.supervisor.recover(peer), true);
+    const closing = h.supervisor.close();
+    assert.equal(h.supervisor.recover(peer), false);
+    await bounded(closing, "close during recovery termination");
+    assert.equal(h.supervisor.state, "closed");
+    assert.equal(h.supervisor.pid, undefined);
+    assert.equal(h.owned.length, 1);
+    assert.equal(h.supervisor.recover(peer), false);
+    assert.deepEqual(h.offlineEvents, []);
+    assert.deepEqual(
+      h.startupEvents.filter((event) => event.stage === "restart"),
+      [],
+    );
+  },
+);
+
+test(
+  "close during recovery backoff cancels replacement",
+  { timeout: TEST_TIMEOUT },
+  async (t) => {
+    const h = await setup(t, { maxRestarts: 2, restartBaseMs: 200 });
+    await h.start();
+    assert.equal(h.supervisor.recover(h.supervisor.peer!), true);
+    await bounded(h.owned[0]!.exit, "exit before recovery backoff close");
+    assert.equal(h.supervisor.state, "backoff");
+    await bounded(h.supervisor.close(), "close scheduled recovery");
+    assert.equal(h.supervisor.state, "closed");
+    assert.equal(h.owned.length, 1);
+    assert.equal(h.readyEvents.length, 1);
+    assert.deepEqual(h.offlineEvents, []);
+  },
+);
+
+test(
+  "close from a recovery restart observer wins before a timer is registered",
+  { timeout: TEST_TIMEOUT },
+  async (t) => {
+    let supervisor: ChildSupervisor | undefined;
+    const closed = deferred<void>();
+    const h = await setup(t, {
+      maxRestarts: 2,
+      onStartup: (event) => {
+        if (event.stage === "restart" && event.outcome === "info")
+          void supervisor!.close().then(() => closed.resolve());
+      },
+    });
+    supervisor = h.supervisor;
+    await h.start();
+    assert.equal(supervisor.recover(supervisor.peer!), true);
+    await bounded(closed.promise, "reentrant close during recovery restart");
+    assert.equal(supervisor.state, "closed");
+    assert.equal(h.owned.length, 1);
+    assert.deepEqual(h.offlineEvents, []);
+  },
+);
+
+test("supervisor diagnostics never expose launch errors or let observers throw", async (t) => {
+  const events: StartupEvent[] = [];
+  const supervisor = new ChildSupervisor({
+    entry: ENTRY,
+    build: BUILD,
+    launch: (() => {
+      throw new Error("fixture-private-launch-data");
+    }) as typeof fork,
+    onStartup: (event) => {
+      events.push(event);
+      throw new Error("fixture-private-observer-data");
+    },
+  });
+  t.after(() => supervisor.close());
+  await assert.rejects(supervisor.start(), { code: "LAUNCH_FAILED" });
+  await supervisor.close();
+  assert.deepEqual(events, [
+    { stage: "launch", outcome: "begin" },
+    { stage: "launch", outcome: "failed", code: "LAUNCH_FAILED" },
+    { stage: "shutdown", outcome: "begin" },
+    { stage: "shutdown", outcome: "ok" },
+  ]);
+});
+
+test(
+  "throwing startup observers preserve real child handshake and shutdown",
+  { timeout: TEST_TIMEOUT },
+  async (t) => {
+    const h = await setup(t, {
+      onStartup: () => {
+        throw new Error("fixture-observer-error");
+      },
+    });
+    await h.start();
+    await bounded(h.supervisor.close(), "throwing observer close");
+    assert.equal(h.supervisor.state, "closed");
+  },
+);
+
+test(
+  "process error diagnostics omit raw error fields",
+  { timeout: TEST_TIMEOUT },
+  async (t) => {
+    const h = await setup(t);
+    await h.start();
+    const child = h.owned[0]!.child;
+    child.emit(
+      "error",
+      Object.assign(new Error("fixture-private-process-error"), {
+        code: "fixture-private-code",
+      }),
+    );
+    await bounded(h.offline.promise, "process error terminates owned child");
+    assert.deepEqual(
+      h.startupEvents.filter((event) => event.stage === "runtime-error"),
+      [{ stage: "runtime-error", outcome: "failed", code: "TRANSPORT_ERROR" }],
+    );
+    assert.equal(
+      JSON.stringify(h.startupEvents).includes("fixture-private"),
+      false,
+    );
+  },
+);
+
+test(
+  "exit diagnostics omit non-allowlisted signals",
+  { timeout: TEST_TIMEOUT },
+  async (t) => {
+    const h = await setup(t);
+    await h.start();
+    h.owned[0]!.child.kill("SIGUSR2");
+    await bounded(h.offline.promise, "unknown signal exit");
+    assert.deepEqual(
+      h.startupEvents.filter((event) => event.stage === "exit"),
+      [{ stage: "exit", outcome: "info" }],
+    );
   },
 );
