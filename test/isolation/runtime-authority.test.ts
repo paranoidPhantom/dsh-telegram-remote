@@ -3,6 +3,7 @@ import test, { type TestContext } from "node:test";
 import { z } from "zod";
 import { ChildRuntime } from "../../src/child/runtime.js";
 import { HostAuthority } from "../../src/host/authority.js";
+import { QuestionRegistry } from "../../src/host/questions.js";
 import { ApprovalRegistry } from "../../src/host/approvals.js";
 import { ResourceRegistry } from "../../src/host/resources.js";
 import type { ConsoleBridge } from "../../src/bot/contracts.js";
@@ -107,12 +108,14 @@ function fixture(t: TestContext) {
         structuredClone(value),
       ]),
   };
+  const questions = new QuestionRegistry();
   const approvals = new ApprovalRegistry();
   const resources = new ResourceRegistry();
   const authority = new HostAuthority({
     bridge,
     store,
     approvals,
+    questions,
     resources,
     ownerId,
     ownerEpoch,
@@ -260,8 +263,12 @@ function fixture(t: TestContext) {
     "runtime.initialize",
     "settings.update",
     "run.push",
+    "run.chunk",
+    "run.chunk.commit",
     "session.refresh",
     "approval.request",
+    "question.request",
+    "question.cancel",
   ]) {
     childHandlers[method] = async (payload, signal) => {
       const handler = runtime.handlers[method];
@@ -325,6 +332,7 @@ function fixture(t: TestContext) {
     child,
     authority,
     approvals,
+    questions,
     rows,
     bridgeCalls,
     requests,
@@ -344,6 +352,94 @@ async function eventually(condition: () => boolean): Promise<void> {
   }
   assert.ok(condition(), "background command registration did not settle");
 }
+
+test(
+  "Telegram question choices submit through authenticated RPC to the Host capability",
+  { timeout: 5000 },
+  async (t) => {
+    const f = fixture(t);
+    await f.initialize();
+    const controller = new AbortController();
+    const items = [
+      {
+        id: "pick",
+        question: "Choose",
+        options: [{ label: "A" }, { label: "B" }],
+      },
+    ];
+    const registered = f.questions.register(
+      {
+        ownerId,
+        ownerEpoch,
+        generation,
+        chatId: ownerId,
+        threadId,
+        sessionId: "s",
+        signal: controller.signal,
+      },
+      items,
+    );
+    const presentation = f.host.request("question.request", {
+      id: registered.id,
+      sessionId: "s",
+      questions: items,
+    });
+    const card = await f.sends.next();
+    const markup = z
+      .object({
+        reply_markup: z.object({
+          inline_keyboard: z.array(
+            z.array(z.object({ text: z.string(), callback_data: z.string() })),
+          ),
+        }),
+      })
+      .parse(card.params);
+    const option = markup.reply_markup.inline_keyboard
+      .flat()
+      .find((button) => button.text === "A")!;
+    const callback = (id: number, token: string): JsonValue => ({
+      update_id: id,
+      callback_query: {
+        id: String(id),
+        from: { id: ownerId },
+        data: token,
+        message: {
+          message_id: 101,
+          chat: { id: ownerId, type: "private" },
+          message_thread_id: threadId,
+        },
+      },
+    });
+    await f.dispatch(callback(31, option.callback_data));
+    const edited = f.apiCalls
+      .filter((call) => call.method === "editMessageReplyMarkup")
+      .at(-1)!;
+    const next = z
+      .object({
+        reply_markup: z.object({
+          inline_keyboard: z.array(
+            z.array(z.object({ text: z.string(), callback_data: z.string() })),
+          ),
+        }),
+      })
+      .parse(edited.params);
+    const done = next.reply_markup.inline_keyboard
+      .flat()
+      .find((button) => button.text === "Submit")!;
+    await f.dispatch(callback(32, done.callback_data));
+    assert.deepEqual(await registered.result, {
+      answers: [{ id: "pick", selected: ["A"] }],
+    });
+    assert.deepEqual(await presentation, { answered: true });
+    assert.ok(
+      f.requests.some((request) => request.method === "questions.answer"),
+    );
+    assert.deepEqual(
+      f.bridgeCalls.filter((call) => call.method === "prompt"),
+      [],
+    );
+  },
+);
 
 test("startup refreshes owner command menus without blocking polling and locale changes refresh them", async (t) => {
   const f = fixture(t);
@@ -458,6 +554,53 @@ test(
       assert.equal(record(request.payload).generation, generation);
       assert.equal(record(request.payload).ownerEpoch, ownerEpoch);
     }
+    assert.deepEqual(f.errors, []);
+  },
+);
+
+test(
+  "replay flag survives direct and chunked RPC delivery without drafts",
+  { timeout: 5000 },
+  async (t) => {
+    const f = fixture(t);
+    await f.initialize();
+    for (const chunked of [false, true]) {
+      const payload = {
+        sessionId: "s",
+        replay: true,
+        view: {
+          turn: chunked ? 2 : 1,
+          outputs: [{ id: "saved", text: "Saved answer" }],
+        },
+      };
+      if (chunked) {
+        await f.host.request("run.chunk", {
+          transferId: "history",
+          index: 0,
+          count: 1,
+          data: Buffer.from(JSON.stringify(payload)).toString("base64"),
+        });
+        assert.deepEqual(
+          await f.host.request("run.chunk.commit", { transferId: "history" }),
+          { status: "delivered" },
+        );
+      } else {
+        assert.deepEqual(await f.host.request("run.push", payload), {
+          status: "delivered",
+        });
+      }
+    }
+    assert.equal(
+      f.apiCalls.filter((call) => call.method === "sendMessage").length,
+      2,
+    );
+    assert.ok(
+      !f.apiCalls.some((call) =>
+        ["sendMessageDraft", "sendChatAction", "deleteMessage"].includes(
+          call.method,
+        ),
+      ),
+    );
     assert.deepEqual(f.errors, []);
   },
 );

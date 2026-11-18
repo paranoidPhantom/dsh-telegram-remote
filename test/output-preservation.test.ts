@@ -22,10 +22,10 @@ function fixture(t: TestContext) {
     f.calls
       .filter(
         (x) =>
-          x.method === "sendMessage" &&
+          ["sendMessage", "sendRichMessage"].includes(x.method) &&
           !x.params.text?.includes('emoji-id="5258121851091043775"'),
       )
-      .map((x) => x.params.text);
+      .map((x) => x.params.rich_message?.markdown ?? x.params.text);
   return { ...f, run, texts };
 }
 
@@ -49,7 +49,7 @@ test("empty real placeholder is one custom emoji while native draft stays textua
   assert.equal(edit?.params.parse_mode, "HTML");
   await f.run({ partialAnswer: "<plain answer>" });
   const answer = f.calls.filter((c) => c.method === "editMessageText").at(-1);
-  assert.equal(answer?.params.text, "<plain answer>");
+  assert.equal(answer?.params.rich_message?.markdown, "&lt;plain answer&gt;");
   assert.equal(answer?.params.parse_mode, undefined);
 });
 
@@ -57,13 +57,12 @@ test("interstitial committed messages publish immediately, format, and dedupe fr
   const f = fixture(t);
   const first = { id: "a", text: "**First** `step`" };
   await f.run({ outputs: [first], answer: first.text });
-  assert.deepEqual(f.texts(), ["First step"]);
-  const firstCall = f.calls.find((x) => x.params.text === "First step");
-  assert.ok(firstCall?.params.entities);
-  assert.deepEqual(
-    firstCall.params.entities.map((x) => x.type),
-    ["bold", "code"],
+  assert.deepEqual(f.texts(), [first.text]);
+  const firstCall = f.calls.find(
+    (x) => x.params.rich_message?.markdown === first.text,
   );
+  assert.equal(firstCall?.method, "sendRichMessage");
+  assert.equal(firstCall?.params.entities, undefined);
   await f.run({
     outputs: [first],
     answer: first.text,
@@ -78,7 +77,7 @@ test("interstitial committed messages publish immediately, format, and dedupe fr
     status: "done",
   });
   await f.run({ outputs: [first, second], final: true });
-  assert.equal(f.texts().filter((x) => x === "First step").length, 1);
+  assert.equal(f.texts().filter((x) => x === first.text).length, 1);
   assert.equal(f.texts().filter((x) => x === second.text).length, 1);
   const lastOutput = outputReceipts(f.record("console:run:s:1")).at(-1);
   assert.ok(lastOutput);

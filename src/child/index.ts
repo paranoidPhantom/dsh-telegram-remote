@@ -46,6 +46,8 @@ export async function startChild(): Promise<void> {
     "session.refresh",
     "approval.request",
     "approval.cancel",
+    "question.request",
+    "question.cancel",
     "files.send",
     "widget.publish",
   ];

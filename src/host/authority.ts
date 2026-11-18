@@ -4,6 +4,7 @@ import { object, string, integer, wireValue } from "../protocol/values.js";
 import type { RpcHandler } from "../protocol/rpc.js";
 import { OperationJournal, type JsonStore } from "./operations.js";
 import type { ApprovalRegistry } from "./approvals.js";
+import type { QuestionRegistry } from "./questions.js";
 import type { ResourceDescriptor, ResourceRegistry } from "./resources.js";
 
 export interface HostAuthorityOptions {
@@ -21,6 +22,7 @@ export interface HostAuthorityOptions {
   ownerEpoch: number;
   generation: string;
   approvals: ApprovalRegistry;
+  questions?: QuestionRegistry;
   resources: ResourceRegistry;
 }
 interface Actor {
@@ -54,6 +56,7 @@ export class HostAuthority {
     this.closed = true;
     this.created.clear();
     this.options.approvals.cancelEpoch(this.ownerEpoch);
+    this.options.questions?.cancelGeneration(this.generation);
     this.options.resources.revokeGeneration(this.generation);
   }
   setOwner(input: {
@@ -111,6 +114,27 @@ export class HostAuthority {
         return run(p);
       };
     };
+    add("questions.answer", async (p) => {
+      const actor = this.actor(p);
+      const id = string(p.id, "question id");
+      const questions = this.options.questions;
+      const sessionId = questions?.session(id);
+      if (!questions || !sessionId) deny();
+      await this.bound(p, actor, sessionId);
+      this.fence(p);
+      questions.answer(
+        id,
+        {
+          ownerId: actor.ownerId,
+          ownerEpoch: this.ownerEpoch,
+          generation: this.generation,
+          chatId: actor.chatId,
+          threadId: actor.threadId,
+        },
+        p.answer,
+      );
+      return { accepted: true };
+    });
     const bridge = this.options.bridge;
     for (const name of ["list", "models", "workspaces"] as const)
       add(`bridge.${name}`, async (p) => {

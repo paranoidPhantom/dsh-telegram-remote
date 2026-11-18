@@ -468,6 +468,7 @@ test(
       async (method, payload) => {
         if (method === "run.push") {
           assert.equal(record(payload).sessionId, "valid");
+          assert.equal(record(payload).replay, true);
           sent.resolve();
           return { status: "delivered" };
         }

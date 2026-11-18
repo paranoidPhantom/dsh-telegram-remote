@@ -43,6 +43,8 @@ import {
   notModified,
   gone,
 } from "../rendering/console-render.js";
+import { ConsoleQuestions } from "./console-questions.js";
+import type { QuestionAnswer } from "../protocol/questions.js";
 import { ConsolePicker } from "./console-picker.js";
 import { ConsoleSessions } from "./console-sessions.js";
 import { RunDelivery } from "../delivery/console-delivery.js";
@@ -57,6 +59,7 @@ import type { ToolNameRule } from "../rendering/tool-name.js";
  */
 export class TelegramConsole {
   readonly translate: ReturnType<typeof createTranslator>;
+  readonly questions: ConsoleQuestions;
   readonly picker: ConsolePicker;
   readonly sessionActions: ConsoleSessions;
   readonly delivery: RunDelivery;
@@ -97,6 +100,7 @@ export class TelegramConsole {
     getLocale = () => "en",
     toolNameRules = [],
     onDeliveryWarning,
+    submitQuestion,
   }: {
     api: TelegramApiPort;
     bridge: ConsoleBridge;
@@ -106,6 +110,7 @@ export class TelegramConsole {
     getLocale?: () => unknown;
     toolNameRules?: readonly ToolNameRule[];
     onDeliveryWarning?: import("./contracts.js").DeliveryPort["warning"];
+    submitQuestion?(id: string, answer: QuestionAnswer): Promise<void>;
   }) {
     this.translate = createTranslator(getLocale);
     this.api = api;
@@ -120,6 +125,17 @@ export class TelegramConsole {
     // Getters deliberately read live flags: native draft fallback can change
     // during a run, and shutdown must be observed after every queued admission.
     const owner = this;
+    this.questions = new ConsoleQuestions({
+      api,
+      get t() {
+        return owner.t;
+      },
+      submit:
+        submitQuestion ??
+        (async () => {
+          throw new Error("Question submission unavailable");
+        }),
+    });
     const messages = {
       get t() {
         return owner.t;
@@ -198,6 +214,7 @@ export class TelegramConsole {
       this.closed = true;
       this.actions.clear();
       this.sessionActions.clear();
+      this.questions.close();
       this.active.clear();
       this.reasons.clear();
       for (const p of this.pending) p.finish("cancelled");
@@ -371,6 +388,7 @@ export class TelegramConsole {
     if (
       !messageId ||
       this.clearedMarkup.has(key) ||
+      this.questions.protects(messageId, ctx) ||
       [...this.pending].some((p) => !p.done && p.messageId === messageId)
     )
       return;
@@ -612,6 +630,12 @@ export class TelegramConsole {
       });
       return;
     }
+    if (query.data?.startsWith("q:")) {
+      await this.api.call("answerCallbackQuery", {
+        callback_query_id: query.id,
+      });
+      return this.questions.callback(query.data, ctx);
+    }
     if (!action || action.expires <= Date.now()) {
       if (action) this.actions.delete(query.data || "");
       if (action && "pending" in action && "expires" in action.pending) {
@@ -843,10 +867,10 @@ export class TelegramConsole {
       this.seen.delete(this.seen.values().next().value || "");
     try {
       let bound = await this.bound(ctx.chatId, ctx.threadId);
-      if (message.forum_topic_created) {
-        if (ctx.threadId && !bound) await this.bindNativeTopic(ctx);
-        return;
-      }
+      // Telegram may create a topic automatically for a command in General.
+      // Topic creation alone is not intent to create a DSH session: leave the
+      // topic intact and wait for a non-command prompt (or explicit /new).
+      if (message.forum_topic_created && !message.text?.trim()) return;
       if (
         (message.forum_topic_deleted ||
           message.forum_topic_closed ||
@@ -866,6 +890,7 @@ export class TelegramConsole {
       }
       const text = message.text?.trim();
       if (!text) return;
+      if (await this.questions.reply(message)) return;
       const reasonKey = `${ctx.chatId}:${ctx.threadId}:${message.reply_to_message?.message_id}`;
       const reason = this.reasons.get(reasonKey);
       if (reason) {

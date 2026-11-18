@@ -28,7 +28,7 @@ export function formatAnswer(input: unknown): AnswerPart {
   }
   function inline(source: string): void {
     const token =
-      /```([^\n`]*)\n([\s\S]*?)```|(`+)([^\n]*?)\3|\*\*([^\n]+?)\*\*|__([^\n]+?)__|\[([^\]\n]+)\]\((<[^>\n]+>|[^)\n]+)\)/g;
+      /```([^\n`]*)\n([\s\S]*?)```|(`+)([^\n]*?)\3|\*\*([^\n]+?)\*\*|__([^\n]+?)__|\[([^\]\n]+)\]\((<[^>\n]+>|[^)\n]+)\)|^ {0,3}#{1,6}[\t ]+([^\n]+?)(?:[\t ]+#+)?[\t ]*(?=\n|$)/gm;
     let cursor = 0;
     let match: RegExpExecArray | null;
     while ((match = token.exec(source))) {
@@ -50,6 +50,35 @@ export function formatAnswer(input: unknown): AnswerPart {
           offset: start,
           length: text.length - start,
         });
+      } else if (match[9] !== undefined) {
+        const start = text.length;
+        const entityStart = entities.length;
+        inline(match[9]);
+        for (let index = entities.length - 1; index >= entityStart; index--)
+          if (entities[index]?.type === "bold") entities.splice(index, 1);
+        // Telegram has no heading entity. Use bold on non-code spans only:
+        // code/pre entities cannot overlap emphasis in Telegram's entity rules.
+        const code = entities.filter(
+          (entity) =>
+            (entity.type === "code" || entity.type === "pre") &&
+            entity.offset >= start,
+        );
+        let position = start;
+        for (const entity of code) {
+          if (position < entity.offset)
+            entities.push({
+              type: "bold",
+              offset: position,
+              length: entity.offset - position,
+            });
+          position = entity.offset + entity.length;
+        }
+        if (position < text.length)
+          entities.push({
+            type: "bold",
+            offset: position,
+            length: text.length - position,
+          });
       } else {
         const target = (match[8] ?? "").replace(/^<|>$/g, "");
         const external = /^https?:\/\//i.test(target);

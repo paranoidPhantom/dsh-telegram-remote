@@ -78,7 +78,8 @@ function fixture() {
       calls.push({ method, params: params });
       if (method === "createForumTopic")
         return { message_thread_id: ++topicId };
-      if (method === "sendMessage") return { message_id: ++messageId };
+      if (method === "sendMessage" || method === "sendRichMessage")
+        return { message_id: ++messageId };
       return true;
     },
     async document(args: ConsoleDocument) {
@@ -416,6 +417,46 @@ test("native new topic binds one DSH session without creating another Telegram t
   );
   assert.equal(f.bridgeCalls.filter((c) => c[0] === "prompt").length, 1);
 });
+for (const order of ["creation-first", "command-first", "combined"]) {
+  test(`auto-created command topic is answered without session confirmation or deletion (${order})`, async (t) => {
+    const f = fixture();
+    t.after(() => f.console.close());
+    const event = f.message(undefined, 555, 1001);
+    event.message.forum_topic_created = { name: "/sessions" };
+    const command = f.message("/sessions", 555, 1002);
+    if (order === "combined") {
+      command.message.forum_topic_created = { name: "/sessions" };
+      await f.console.handleUpdate(command);
+    } else {
+      for (const update of order === "creation-first"
+        ? [event, command]
+        : [command, event])
+        await f.console.handleUpdate(update);
+    }
+    assert.equal(await f.console.getTopic("s1"), undefined);
+    assert.equal(f.console.sessionActions.initiations.size, 0);
+    assert.equal(
+      f.calls.filter((call) => call.method === "sendMessage").length,
+      1,
+    );
+    assert.match(requiredField(f.lastSend().params.text), /DSH sessions/);
+    assert.equal(f.lastSend().params.message_thread_id, 555);
+    assert.ok(
+      !f.calls.some((call) =>
+        ["createForumTopic", "deleteForumTopic"].includes(call.method),
+      ),
+    );
+    assert.equal(
+      f.bridgeCalls.filter((call) => call[0] === "prompt").length,
+      0,
+    );
+    // The topic is still usable: only an actual prompt offers model confirmation.
+    await f.console.handleUpdate(f.message("first real prompt", 555, 1003));
+    assert.equal(f.console.sessionActions.initiations.size, 1);
+    assert.ok(f.token(f.lastSend(), "Confirm"));
+  });
+}
+
 test("first prompt in unknown topic creates a session when creation event is absent", async (t) => {
   const f = fixture();
   t.after(() => f.console.close());
@@ -736,13 +777,23 @@ test("long final chunks preserve all UTF16 text and controls only on last chunk"
   const answer = "a".repeat(4095) + "😀<&>" + "b".repeat(8000);
   const before = f.calls.length;
   await f.console.onRun("s1", { turn: 1, answer, final: true });
-  const sends = f.calls.slice(before).filter((c) => c.method === "sendMessage");
-  assert.equal(sends.map((c) => requiredField(c.params.text)).join(""), answer);
+  const sends = f.calls
+    .slice(before)
+    .filter((c) => c.method === "sendRichMessage");
+  const markdown = sends
+    .map((c) => requiredField(c.params.rich_message).markdown)
+    .join("");
+  assert.equal(
+    markdown.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"),
+    answer,
+  );
   assert.ok(
     sends.every(
       (c) =>
-        requiredField(c.params.text).length <= 4096 &&
-        !/[\uD800-\uDBFF]$/.test(requiredField(c.params.text)),
+        Buffer.byteLength(
+          requiredField(c.params.rich_message).markdown,
+          "utf8",
+        ) <= 16000,
     ),
   );
   assert.ok(sends.slice(0, -1).every((c) => !c.params.reply_markup));

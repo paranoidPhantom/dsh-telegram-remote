@@ -161,7 +161,7 @@ test("locked activation owns all registrations and supports unload/reload", asyn
       assert.equal(mock.projections, 1);
       assert.equal(mock.domains, 1);
       assert.ok(mock.route);
-      assert.equal(mock.registrations.size, 8);
+      assert.equal(mock.registrations.size, 9);
       await mock.unload();
       assert.equal(mock.registrations.size, 0);
       assert.equal(mock.domains, 0);

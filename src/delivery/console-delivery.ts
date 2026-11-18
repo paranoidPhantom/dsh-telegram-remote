@@ -46,6 +46,23 @@ const draftText = (view: RunView): string =>
     ? view.partialAnswer || ""
     : view.answer || "";
 import { answerParts } from "../rendering/answer-format.js";
+import { richAnswerParts } from "../rendering/rich-answer.js";
+
+// Plain text needs no rich structure. Markdown goes through the native rich
+// parser rather than being flattened into legacy message entities.
+const hasMarkdown = (text: string) =>
+  /[*_`~|\[\]#$<>=!]|^\s*(?:[-+]\s|\d+[.)]\s|={3,}\s*$)/m.test(text);
+const deliveryParts = (
+  text: string,
+  rich: boolean,
+): {
+  text: string;
+  entities?: TelegramEntity[];
+  rich_message?: { markdown: string };
+}[] =>
+  rich
+    ? richAnswerParts(text).map((part) => ({ text: "", rich_message: part }))
+    : answerParts(text);
 import { relativePathText } from "../rendering/path-display.js";
 import { displayToolName, matchToolName } from "../rendering/tool-name.js";
 import {
@@ -271,12 +288,18 @@ export class RunDelivery {
       });
     if (!this.console.draftsUnsupported) {
       try {
-        await this.console.api.call("sendMessageDraft", {
-          ...this.console.params(mapping),
-          draft_id: delivery.draftId,
-          ...formatted,
-          can_stop: true,
-        });
+        const rich = !latestTool && hasMarkdown(previewText);
+        await this.console.api.call(
+          rich ? "sendRichMessageDraft" : "sendMessageDraft",
+          {
+            ...this.console.params(mapping),
+            draft_id: delivery.draftId,
+            ...(rich
+              ? { rich_message: richAnswerParts(previewText)[0] }
+              : formatted),
+            can_stop: true,
+          },
+        );
         // Sending the draft can clear chat actions; renew typing afterward.
         if (this.console.api.typing)
           void this.console.api
@@ -325,15 +348,25 @@ export class RunDelivery {
     )
       return;
     if (!delivery.messageId) return;
-    await this.console.edit(
-      mapping,
-      delivery.messageId,
-      text,
-      controls
-        ? this.console.controls(delivery.id, mapping, true)
-        : { inline_keyboard: [] },
-      empty ? "HTML" : undefined,
-    );
+    const markup = controls
+      ? this.console.controls(delivery.id, mapping, true)
+      : { inline_keyboard: [] };
+    if (!empty && hasMarkdown(draftText(view))) {
+      await this.console.api.call("editMessageText", {
+        chat_id: mapping.chatId,
+        message_id: delivery.messageId,
+        rich_message: richAnswerParts(draftText(view))[0],
+        reply_markup: markup,
+      });
+    } else {
+      await this.console.edit(
+        mapping,
+        delivery.messageId,
+        text,
+        markup,
+        empty ? "HTML" : undefined,
+      );
+    }
     this.pageFrames.set(key, signature);
   }
   // Telegram accepted sends must be recorded before moving/clearing controls.
@@ -365,12 +398,15 @@ export class RunDelivery {
     let sent;
     try {
       sent = messageResult(
-        await this.console.api.call("sendMessage", {
-          ...this.console.params(mapping),
-          text,
-          disable_notification: true,
-          ...extra,
-        }),
+        await this.console.api.call(
+          extra.rich_message ? "sendRichMessage" : "sendMessage",
+          {
+            ...this.console.params(mapping),
+            ...(extra.rich_message ? {} : { text }),
+            disable_notification: true,
+            ...extra,
+          },
+        ),
       );
     } catch (error) {
       throw new SendFailure(error);
@@ -401,6 +437,7 @@ export class RunDelivery {
       record = {
         id: output.id,
         hash: textHash(output.text),
+        ...(hasMarkdown(output.text) ? { format: "rich-v1" as const } : {}),
         messageIds: [],
         ...(segmentEnd === undefined ? {} : { segmentEnd }),
       };
@@ -408,7 +445,8 @@ export class RunDelivery {
     }
     let parts;
     try {
-      parts = answerParts(output.text);
+      // Never change chunk boundaries of an existing legacy receipt.
+      parts = deliveryParts(output.text, record.format === "rich-v1");
     } catch {
       record.quarantine = "invalid";
       await this.console.store.set(key, delivery);
@@ -428,7 +466,9 @@ export class RunDelivery {
           key,
           part.text,
           {
-            entities: part.entities,
+            ...(part.rich_message
+              ? { rich_message: part.rich_message }
+              : { entities: part.entities }),
             disable_notification: i > 0,
             ...(i === parts.length - 1
               ? {
@@ -560,7 +600,11 @@ export class RunDelivery {
       );
     }
   }
-  async onRun(id: SessionId, view: RunView) {
+  async onRun(
+    id: SessionId,
+    view: RunView,
+    options: { replay?: boolean } = {},
+  ) {
     if (this.console.closed) return;
     if (view.turn == null)
       throw new TypeError("onRun requires a stable view.turn");
@@ -697,6 +741,26 @@ export class RunDelivery {
           if (typeof output.id === "string" && hasText(output.text))
             await this.completedOutput(mapping, delivery, key, output, view);
         }
+        if (!view.final && options.replay) {
+          // Historical boundaries contain committed outputs, not live progress.
+          // Never register them for heartbeat drafts or create a placeholder.
+          // A later live snapshot resumes the ordinary native draft lifecycle.
+          if (previous?.view.turn === view.turn) this.console.active.delete(id);
+          await this.cosmetic(() =>
+            this.log(
+              mapping,
+              delivery,
+              { ...view, logEnd: logRows(view, delivery).length },
+              key,
+            ),
+          );
+          for (const messageId of new Set(retired))
+            await this.cosmetic(() =>
+              this.console.clearMarkup(mapping, messageId),
+            );
+          await this.console.store.set(key, delivery);
+          return deliveryWarning(delivery);
+        }
         if (!view.final) {
           this.console.active.set(id, { view, draftId: delivery.draftId });
           if (!delivery.messageId && !delivery.quarantine) {
@@ -769,13 +833,22 @@ export class RunDelivery {
         }
         // Persist each sent chunk before proceeding: retries never resend an
         // already delivered answer prefix, and failure never deletes the preview.
-        const parts = answerParts(
+        const finalText =
           view.answer ||
-            (/fail|error/i.test(view.status || "")
-              ? this.console.t("unableComplete")
-              : /stop|cancel/i.test(view.status || "")
-                ? this.console.t("stopped")
-                : this.console.t("noAnswer")),
+          (/fail|error/i.test(view.status || "")
+            ? this.console.t("unableComplete")
+            : /stop|cancel/i.test(view.status || "")
+              ? this.console.t("stopped")
+              : this.console.t("noAnswer"));
+        if (delivery.finalMessageIds === undefined && hasMarkdown(finalText)) {
+          delivery.finalFormat = "rich-v1";
+          // Persist representation before any send; legacy partial receipts keep
+          // their original entity chunks on recovery.
+          await this.console.store.set(key, delivery);
+        }
+        const parts = deliveryParts(
+          finalText,
+          delivery.finalFormat === "rich-v1",
         );
         delivery.finalMessageIds ||= [];
         this.console.active.delete(id);
@@ -789,7 +862,9 @@ export class RunDelivery {
           await this.console.api.call("editMessageText", {
             chat_id: mapping.chatId,
             message_id: delivery.messageId,
-            ...parts[0],
+            ...(parts[0]?.rich_message
+              ? { rich_message: parts[0].rich_message }
+              : parts[0]),
             reply_markup: this.console.finalControls(id, mapping, view),
           });
           await this.console.store.set(key, {
@@ -816,7 +891,9 @@ export class RunDelivery {
             key,
             part.text,
             {
-              entities: part.entities,
+              ...(part.rich_message
+                ? { rich_message: part.rich_message }
+                : { entities: part.entities }),
               disable_notification: i > 0,
               ...(i === parts.length - 1
                 ? {

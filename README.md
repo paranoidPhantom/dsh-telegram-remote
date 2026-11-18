@@ -11,11 +11,12 @@ Control DeepSeek Harness from a private Telegram bot, built around **Telegram th
 ## Features
 
 - **Session topics:** open existing DSH sessions on demand or create one through Telegram’s native **New Topic** action.
-- **Native streaming:** draft replies, Telegram’s Stop button, live tool previews, and best-effort typing indicators. Completed messages and stopped partial answers stay in the chat.
+- **Native streaming:** draft replies, Telegram’s Stop button, live tool previews, and best-effort typing indicators. Completed messages and stopped partial answers stay in the chat. Markdown replies use Telegram Rich Messages for native headings, lists, tables, quotes, code and formulas.
 - **Model controls:** choose providers, models, and supported reasoning-effort levels in place, including the model’s default effort.
 - **Workspace selection:** choose an existing DSH workspace when creating a session.
 - **Pinned checklists:** the first todo list is pinned; later updates edit the same message across conversation turns.
 - **Readable activity logs:** collapsed tool logs with truncated model-reasoning previews and configurable custom emoji icons.
+- **User questions:** answer blocking questions with single/multiple choices, explicit text replies, or Skip. Timed/late questions and specialized approval/plan reviews remain on existing Harness surfaces.
 - **Interactive approvals:** review the requested operation and approve or reject it with colored buttons.
 - **Session controls:** pinned session details, queue steering, and topic management. Ending a Telegram topic does not delete or stop its DSH session.
 - **File delivery:** receive supported photos, video, and audio natively, or download documents and files touched during a turn.

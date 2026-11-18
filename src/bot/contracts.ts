@@ -124,6 +124,7 @@ export interface OutputReceipt {
   id: string;
   hash: string;
   messageIds: number[];
+  format?: "rich-v1";
   pending?: boolean;
   complete?: boolean;
   /** Terminal delivery exception, not success; retained to prevent blind replay. */
@@ -143,6 +144,7 @@ export interface RunReceipt extends TopicContext {
   quarantine?: "uncertain" | "rejected" | "invalid";
   outputs?: OutputReceipt[];
   finalMessageIds?: number[];
+  finalFormat?: "rich-v1";
   logMessageIds?: number[];
   sealedLogMessageIds?: number[];
   logStart?: number;
@@ -177,6 +179,7 @@ export interface TelegramEntity extends Omit<AnswerEntity, "type"> {
   custom_emoji_id?: string;
 }
 export interface MessageOptions {
+  rich_message?: { markdown: string; skip_entity_detection?: boolean };
   disable_notification?: boolean;
   parse_mode?: "HTML";
   entities?: TelegramEntity[];
@@ -187,6 +190,8 @@ export interface TelegramMessageResult {
 }
 export type TelegramMethod =
   | "sendMessage"
+  | "sendRichMessage"
+  | "sendRichMessageDraft"
   | "editMessageText"
   | "editMessageReplyMarkup"
   | "pinChatMessage"
@@ -592,6 +597,7 @@ function isOutputReceipt(value: unknown): value is OutputReceipt {
     isString(value.id) &&
     isString(value.hash) &&
     numberArray(value.messageIds) &&
+    (value.format === undefined || value.format === "rich-v1") &&
     optionalFields(value, ["segmentEnd"], isNumber) &&
     optionalFields(value, ["pending", "complete"], isBoolean) &&
     (value.quarantine === undefined ||
@@ -609,6 +615,7 @@ function isHistoricalReceipt(value: unknown): value is HistoricalRunReceipt {
       value.quarantine === "rejected" ||
       value.quarantine === "invalid") &&
     (value.logFormat === undefined || value.logFormat === "activity-v1") &&
+    (value.finalFormat === undefined || value.finalFormat === "rich-v1") &&
     optionalFields(
       value,
       ["draftId", "chatId", "threadId", "messageId", "logStart"],

@@ -15,6 +15,8 @@ import { dshLocale } from "./i18n/dsh-locale.js";
 import { ChildSupervisor } from "./host/supervisor.js";
 import { HostAuthority } from "./host/authority.js";
 import { ApprovalRegistry } from "./host/approvals.js";
+import { QuestionRegistry } from "./host/questions.js";
+import { registerQuestionForwarding } from "./host/question-forwarding.js";
 import { registerApprovalForwarding } from "./host/approval-forwarding.js";
 import { RuntimeDiagnosticsPoller } from "./host/diagnostics.js";
 import { RuntimeStatusWriter } from "./host/runtime-status.js";
@@ -131,6 +133,7 @@ export async function apply<Handle>(
   let lastError: string | null = null;
   const lifecycle = new RuntimeLifecycle(() => report());
   const signal = lifecycle.signal;
+  const questions = new QuestionRegistry();
   const approvals = new ApprovalRegistry(),
     resources = new ResourceRegistry(),
     widgetResources = new WidgetResourceAccess<Handle>();
@@ -199,6 +202,7 @@ export async function apply<Handle>(
       await lease?.close();
       lease = undefined;
       approvals.close();
+      questions.close();
       resources.close();
       widgetResources.close();
       await lifecycle.close();
@@ -228,11 +232,12 @@ export async function apply<Handle>(
     peer: RpcPeer,
     id: string,
     view: RunView & { turn: number },
+    replay = false,
   ) => {
     // This is an explicitly mapped semantic DTO; JSON.stringify removes its
     // optional fields before strict bounded validation (never arbitrary Host objects).
     const payload = decodeJson(
-      JSON.stringify({ sessionId: id, view }),
+      JSON.stringify({ sessionId: id, view, replay }),
       10 * 1024 * 1024,
     );
     const text = encodeJson(payload, 10 * 1024 * 1024),
@@ -477,6 +482,7 @@ export async function apply<Handle>(
       "credentials.read",
       "resources.read",
       "resources.release",
+      "questions.answer",
       "approvals.decide",
       "approvals.reason",
       "storage.namespace",
@@ -757,7 +763,7 @@ export async function apply<Handle>(
               });
               acknowledgement = await replayStep(
                 "send-view",
-                () => sendView(peer, id, view),
+                () => sendView(peer, id, view, true),
                 seq,
               );
             } catch (error) {
@@ -1010,6 +1016,7 @@ export async function apply<Handle>(
               ownerEpoch,
               generation,
               approvals,
+              questions,
               resources,
             });
             let startupPhase: "initialize" | "replay" = "initialize";
@@ -1269,6 +1276,25 @@ export async function apply<Handle>(
         },
         get ownerEpoch() {
           return ownerEpoch;
+        },
+        get peer() {
+          return readyPeer;
+        },
+      }),
+    );
+    own(() =>
+      registerQuestionForwarding(ctx, {
+        questions,
+        signal,
+        surface,
+        get ownerId() {
+          return ownerId;
+        },
+        get ownerEpoch() {
+          return ownerEpoch;
+        },
+        get generation() {
+          return generation;
         },
         get peer() {
           return readyPeer;

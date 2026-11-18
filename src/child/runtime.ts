@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { questionItemsSchema } from "../protocol/questions.js";
 import { toolNameRulesSchema } from "../rendering/tool-name.js";
 import { z } from "zod";
 import { TelegramConsole } from "../bot/console.js";
@@ -195,6 +196,13 @@ export class ChildRuntime {
           this.settings.locale = value.locale;
           await this.track(this.syncCommands());
         }
+        return null;
+      },
+      "question.request": (payload, signal) =>
+        this.track(this.question(payload, signal)),
+      "question.cancel": async (payload) => {
+        const value = z.object({ id: z.string() }).parse(payload);
+        this.requireSurface().questions.cancel(value.id);
         return null;
       },
       "run.push": (payload) => this.track(this.run(payload)),
@@ -452,6 +460,23 @@ export class ChildRuntime {
         signal: this.controller.signal,
         getLocale: () => this.settings?.locale,
         toolNameRules: settings.toolNameRules,
+        submitQuestion: async (id, answer) => {
+          const actor = this.scope.getStore();
+          if (!actor) throw new Error("Question actor unavailable");
+          const accepted = z.object({ accepted: z.literal(true) }).parse(
+            await this.request("questions.answer", {
+              id,
+              answer,
+              actor: {
+                ownerId: actor.ownerId,
+                chatId: actor.chatId,
+                threadId: actor.threadId,
+                privateChat: actor.privateChat,
+              },
+            }),
+          );
+          if (!accepted.accepted) throw new Error("Question not accepted");
+        },
         onDeliveryWarning: (event) => {
           void this.startup({
             stage: "runtime-error",
@@ -618,6 +643,23 @@ export class ChildRuntime {
           "sendMessage",
           chat.extend({ text: z.string() }).parse(record),
         );
+      case "sendRichMessage":
+        return this.adapter.call(
+          "sendRichMessage",
+          chat
+            .extend({ rich_message: z.object({ markdown: z.string() }) })
+            .parse(record),
+        );
+      case "sendRichMessageDraft":
+        return this.adapter.call(
+          "sendRichMessageDraft",
+          chat
+            .extend({
+              draft_id: z.number(),
+              rich_message: z.object({ markdown: z.string() }),
+            })
+            .parse(record),
+        );
       case "editMessageText":
         return this.adapter.call("editMessageText", record);
       case "editMessageReplyMarkup":
@@ -722,6 +764,34 @@ export class ChildRuntime {
       ),
     );
   }
+  private async question(
+    payload: JsonValue,
+    signal: AbortSignal,
+  ): Promise<JsonValue> {
+    const value = z
+      .object({
+        id: z.string(),
+        sessionId: z.string(),
+        questions: questionItemsSchema,
+      })
+      .parse(payload);
+    const surface = this.requireSurface();
+    const mapping = await surface.mapping(value.sessionId);
+    if (
+      !mapping ||
+      mapping.deleted ||
+      mapping.closed ||
+      mapping.chatId !== this.settings?.ownerId
+    )
+      throw new Error("Question topic unavailable");
+    await surface.questions.request(
+      value.id,
+      mapping,
+      value.questions,
+      AbortSignal.any([signal, this.controller.signal]),
+    );
+    return { answered: true };
+  }
   private run(payload: JsonValue): Promise<JsonValue> {
     return this.eventStarted.run(performance.now(), () =>
       this.deliverRun(payload),
@@ -729,7 +799,11 @@ export class ChildRuntime {
   }
   private async deliverRun(payload: JsonValue): Promise<JsonValue> {
     const value = z
-      .object({ sessionId: z.string(), view: runSchema })
+      .object({
+        sessionId: z.string(),
+        view: runSchema,
+        replay: z.boolean().optional(),
+      })
       .parse(payload);
     const surface = this.requireSurface();
     if (surface.closed) throw new Error("Child surface is closed");
@@ -739,6 +813,7 @@ export class ChildRuntime {
     const deliveryStatus = await surface.delivery.onRun(
       value.sessionId,
       value.view,
+      { replay: value.replay },
     );
     this.controller.signal.throwIfAborted();
     if (surface.closed) throw new Error("Child surface closed during delivery");

@@ -68,6 +68,7 @@ test("reasoning is bounded, astral safe, idempotent and separate from tools/answ
       { pattern: "reasoning", emoji: "🧠" },
     ]).join("");
     assert.ok(html.includes(t("reasoningPreview")));
+    assert.ok(!/[（(](?:preview|预览|фрагмент)[）)]/.test(html));
     assert.ok(html.includes("&lt;inspect&gt; &amp; compare carefully"));
     assert.ok(html.includes("🧠"));
     assert.ok(!html.includes("<inspect>"));

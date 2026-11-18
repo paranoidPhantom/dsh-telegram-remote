@@ -11,6 +11,55 @@ import {
 const fixture = (t: Parameters<typeof deliveryFixture>[0]) =>
   deliveryFixture(t, { ownerId: 1 });
 
+for (const unsupported of [false, true]) {
+  test(`replay delivers committed text directly without transient surfaces (fallback=${unsupported})`, async (t) => {
+    const f = fixture(t);
+    f.console.draftsUnsupported = unsupported;
+    const view = {
+      turn: 1,
+      outputs: [{ id: "first", text: "Saved answer", toolCount: 1 }],
+      toolLog: [{ name: "read", summary: "source.ts", status: "completed" }],
+    };
+    await f.console.onRun("s", view, { replay: true });
+    await f.console.refreshDrafts();
+    assert.equal(f.console.active.size, 0);
+    assert.equal(f.record("console:run:s:1").messageId, undefined);
+    assert.ok(
+      !f.calls.some((call) =>
+        ["sendMessageDraft", "sendChatAction", "deleteMessage"].includes(
+          call.method,
+        ),
+      ),
+    );
+    const sends = f.calls.filter((call) => call.method === "sendMessage");
+    assert.equal(sends.length, 2); // sealed log, then the saved answer
+    assert.equal(sends[1]?.params.text, "Saved answer");
+    const before = sends.length;
+    await f.console.onRun("s", { ...view, final: true }, { replay: true });
+    assert.equal(
+      f.calls.filter((call) => call.method === "sendMessage").length,
+      before,
+    );
+    assert.equal(f.record("console:run:s:1").final, true);
+  });
+}
+
+test("an unfinished replay resumes drafts only on a live snapshot", async (t) => {
+  const f = fixture(t);
+  const view = { turn: 1, outputs: [{ id: "first", text: "Saved answer" }] };
+  await f.console.onRun("s", view, { replay: true });
+  assert.ok(!f.calls.some((call) => call.method === "sendMessageDraft"));
+  await f.console.onRun("s", { ...view, partialAnswer: "Live continuation" });
+  assert.equal(f.console.active.size, 1);
+  assert.ok(
+    f.calls.some(
+      (call) =>
+        call.method === "sendMessageDraft" &&
+        call.params.text === "Live continuation",
+    ),
+  );
+});
+
 test("unchanged frames do not edit pages or regenerate callback tokens; native draft needs no typing", async (t) => {
   const f = fixture(t),
     view = {

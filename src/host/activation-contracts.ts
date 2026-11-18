@@ -16,6 +16,8 @@ import type {
 } from "../files/send-file.js";
 import type { JsonValue } from "../protocol/json.js";
 import type { ApprovalOutcome } from "./approvals.js";
+import type { HostQuestionRequest } from "./question-forwarding.js";
+import type { QuestionAnswer } from "../protocol/questions.js";
 
 import type { RpcPeer } from "../protocol/rpc.js";
 import type { SupervisorOptions, SupervisorState } from "./supervisor.js";
@@ -113,6 +115,14 @@ export interface ActivationContext<Handle>
       },
       result: { isError?: boolean },
     ) => void,
+  ): Registration;
+  on(
+    name: "user-questions/request",
+    listener: (
+      request: HostQuestionRequest,
+      next: () => Promise<QuestionAnswer>,
+    ) => Promise<QuestionAnswer>,
+    options: { prepend: true },
   ): Registration;
   on(
     name: "approval/request",

@@ -7,6 +7,22 @@ import {
 } from "../src/telegram/adapter.js";
 import { required } from "./fixture-assertions.js";
 import type { StartupEvent } from "../src/protocol/startup.js";
+import { historicalReceipt } from "../src/bot/contracts.js";
+
+test("rich receipt formats accept legacy absence and reject unknown formats", () => {
+  const output = { id: "o", hash: "h", messageIds: [1] };
+  assert.ok(historicalReceipt({ outputs: [output] }));
+  assert.ok(
+    historicalReceipt({
+      outputs: [{ ...output, format: "rich-v1" }],
+      finalFormat: "rich-v1",
+    }),
+  );
+  assert.throws(() =>
+    historicalReceipt({ outputs: [{ ...output, format: "future" }] }),
+  );
+  assert.throws(() => historicalReceipt({ finalFormat: "future" }));
+});
 
 test("startup credential diagnostics are awaited, classified and omit polling", async () => {
   const events: StartupEvent[] = [];
@@ -228,6 +244,83 @@ test("persistent sends keep a chat-wide 1100ms pace across topics", async () => 
   );
   assert.deepEqual(f.waits, [1100]);
 });
+test("rich wire methods are admitted and rich messages share persistent chat pacing", async () => {
+  const f = fixture();
+  const rich_message = { markdown: "### Heading\n\nA **rich** paragraph" };
+  await f.api.callWire("sendRichMessage", {
+    chat_id: 1,
+    message_thread_id: 10,
+    rich_message,
+  });
+  await f.api.call("sendMessage", { chat_id: 1, text: "ordinary" });
+  await f.api.callWire("sendRichMessage", {
+    chat_id: 1,
+    message_thread_id: 20,
+    rich_message,
+  });
+  assert.deepEqual(
+    f.calls.map((call) => [call.method, call.time]),
+    [
+      ["sendRichMessage", 0],
+      ["sendMessage", 1100],
+      ["sendRichMessage", 2200],
+    ],
+  );
+  assert.deepEqual(f.calls[0]?.params?.rich_message, rich_message);
+});
+
+test("rich drafts share topic pacing and typing suppression with ordinary drafts", async () => {
+  const f = fixture();
+  const rich_message = { markdown: "### Heading" };
+  await f.api.callWire("sendRichMessageDraft", {
+    chat_id: 1,
+    message_thread_id: 10,
+    draft_id: 1,
+    can_stop: true,
+    rich_message,
+  });
+  await f.api.call("sendChatAction", {
+    chat_id: 1,
+    message_thread_id: 10,
+    action: "typing",
+  });
+  await f.api.call("sendChatAction", {
+    chat_id: 1,
+    message_thread_id: 20,
+    action: "typing",
+  });
+  await f.api.call("sendMessageDraft", {
+    chat_id: 1,
+    message_thread_id: 10,
+    draft_id: 1,
+    text: "plain",
+  });
+  await f.api.callWire("sendRichMessageDraft", {
+    chat_id: 1,
+    message_thread_id: 10,
+    draft_id: 1,
+    rich_message,
+  });
+  await f.api.callWire("sendRichMessageDraft", {
+    chat_id: 1,
+    message_thread_id: 30,
+    draft_id: 2,
+    rich_message,
+  });
+  assert.deepEqual(
+    f.calls.map((call) => [call.method, call.time]),
+    [
+      ["sendRichMessageDraft", 0],
+      ["sendChatAction", 0],
+      ["sendMessageDraft", 300],
+      ["sendRichMessageDraft", 600],
+      ["sendRichMessageDraft", 600],
+    ],
+  );
+  assert.deepEqual(f.calls[0]?.params?.rich_message, rich_message);
+  assert.equal(f.calls[0]?.params?.can_stop, true);
+});
+
 test("edits pace per message at 300ms separately from persistent sends", async () => {
   const f = fixture();
   await f.api.call("sendMessage", { chat_id: 1, text: "test" });

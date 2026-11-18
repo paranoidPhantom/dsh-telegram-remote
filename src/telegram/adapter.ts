@@ -190,6 +190,8 @@ const WIRE_METHODS: ReadonlySet<string> = new Set([
   "getWebhookInfo",
   "setMyCommands",
   "sendMessage",
+  "sendRichMessage",
+  "sendRichMessageDraft",
   "editMessageText",
   "editMessageReplyMarkup",
   "pinChatMessage",
@@ -310,7 +312,8 @@ export class TelegramAdapter {
       String(params.chat_id),
       String(params.message_thread_id ?? 0),
     ]);
-    const draft = method === "sendMessageDraft";
+    const draft =
+      method === "sendMessageDraft" || method === "sendRichMessageDraft";
     const action = method === "sendChatAction";
     const edit = method.startsWith("edit");
     const mutation =

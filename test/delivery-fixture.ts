@@ -86,7 +86,9 @@ export function deliveryFixture(
   let scans = 0;
   const api: DeliveryApi = {
     async call(method, params = {}) {
-      const result = method === "sendMessage" ? { message_id: ++next } : true;
+      const result = ["sendMessage", "sendRichMessage"].includes(method)
+        ? { message_id: ++next }
+        : true;
       calls.push({ method, params, result });
       return result;
     },
