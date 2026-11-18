@@ -55,6 +55,32 @@ import {
   toolLogPages,
 } from "../rendering/console-render.js";
 
+// Distinguish Telegram send failure from failure to persist an accepted ID.
+// Persistence/authority failures must still fail closed, not become successful ACKs.
+class SendFailure extends Error {
+  constructor(readonly original: unknown) {
+    super("Telegram send failed");
+  }
+}
+const deliveryDisposition = (error: unknown): "uncertain" | "rejected" => {
+  const fields =
+    error && typeof error === "object"
+      ? (error as { code?: unknown; errorCode?: unknown })
+      : {};
+  const code = Number(fields.code ?? fields.errorCode);
+  return Number.isInteger(code) &&
+    code >= 400 &&
+    code < 500 &&
+    code !== 408 &&
+    code !== 429
+    ? "rejected"
+    : "uncertain";
+};
+const deliveryWarning = (delivery: RunReceipt | undefined) =>
+  delivery?.quarantine || delivery?.outputs?.some((output) => output.quarantine)
+    ? ("warning" as const)
+    : undefined;
+
 /** Serialized run delivery, Telegram draft lifecycle and durable message ids. */
 export class RunDelivery {
   readonly todos: TodoDelivery;
@@ -315,7 +341,17 @@ export class RunDelivery {
     try {
       await task();
     } catch {
-      /* Never gate output on cosmetics. */
+      this.warn("DELIVERY_INVALID", "delivery-cosmetic");
+    }
+  }
+  private warn(
+    code: "DELIVERY_UNCERTAIN" | "DELIVERY_REJECTED" | "DELIVERY_INVALID",
+    operation: "deliver-output" | "deliver-view" | "delivery-cosmetic",
+  ) {
+    try {
+      this.console.warning?.({ code, operation });
+    } catch {
+      /* Observer only. */
     }
   }
   async sendRecorded(
@@ -326,14 +362,19 @@ export class RunDelivery {
     extra: MessageOptions,
     ids: number[],
   ) {
-    const sent = messageResult(
-      await this.console.api.call("sendMessage", {
-        ...this.console.params(mapping),
-        text,
-        disable_notification: true,
-        ...extra,
-      }),
-    );
+    let sent;
+    try {
+      sent = messageResult(
+        await this.console.api.call("sendMessage", {
+          ...this.console.params(mapping),
+          text,
+          disable_notification: true,
+          ...extra,
+        }),
+      );
+    } catch (error) {
+      throw new SendFailure(error);
+    }
     ids.push(sent.message_id);
     await this.console.store.set(key, delivery);
     return sent;
@@ -348,10 +389,13 @@ export class RunDelivery {
   ) {
     delivery.outputs ||= [];
     let record = delivery.outputs.find((item) => item.id === output.id);
-    if (record?.pending)
-      throw new Error(
-        `Telegram output delivery ${output.id} is ambiguous; automatic resend suppressed`,
-      );
+    if (record?.quarantine) return;
+    if (record?.pending) {
+      record.quarantine = "uncertain";
+      await this.console.store.set(key, delivery);
+      this.warn("DELIVERY_UNCERTAIN", "deliver-output");
+      return;
+    }
     if (record?.complete) return;
     if (!record) {
       record = {
@@ -362,33 +406,57 @@ export class RunDelivery {
       };
       delivery.outputs.push(record);
     }
-    const parts = answerParts(output.text);
+    let parts;
+    try {
+      parts = answerParts(output.text);
+    } catch {
+      record.quarantine = "invalid";
+      await this.console.store.set(key, delivery);
+      this.warn("DELIVERY_INVALID", "deliver-output");
+      return;
+    }
     const deliveredParts = record.messageIds.length;
     for (const [i, part] of parts.entries()) {
       if (i < deliveredParts) continue;
       // An interrupted/ambiguous request must not be replayed by a heartbeat.
       record.pending = true;
       await this.console.store.set(key, delivery);
-      await this.sendRecorded(
-        mapping,
-        delivery,
-        key,
-        part.text,
-        {
-          entities: part.entities,
-          disable_notification: i > 0,
-          ...(i === parts.length - 1
-            ? {
-                reply_markup: this.console.controls(
-                  delivery.id,
-                  mapping,
-                  !final,
-                ),
-              }
-            : {}),
-        },
-        record.messageIds,
-      );
+      try {
+        await this.sendRecorded(
+          mapping,
+          delivery,
+          key,
+          part.text,
+          {
+            entities: part.entities,
+            disable_notification: i > 0,
+            ...(i === parts.length - 1
+              ? {
+                  reply_markup: this.console.controls(
+                    delivery.id,
+                    mapping,
+                    !final,
+                  ),
+                }
+              : {}),
+          },
+          record.messageIds,
+        );
+      } catch (error) {
+        if (!(error instanceof SendFailure) || this.console.closed) throw error;
+        record.quarantine = deliveryDisposition(error.original);
+        // Retain pending=true for uncertain sends; definitive rejection is known
+        // not delivered. Neither is complete, and neither is blindly replayed.
+        record.pending = record.quarantine === "uncertain";
+        await this.console.store.set(key, delivery);
+        this.warn(
+          record.quarantine === "uncertain"
+            ? "DELIVERY_UNCERTAIN"
+            : "DELIVERY_REJECTED",
+          "deliver-output",
+        );
+        return;
+      }
       record.pending = false;
       await this.console.store.set(key, delivery);
     }
@@ -509,8 +577,16 @@ export class RunDelivery {
       if (!mapping || mapping.deleted || this.console.closed) return;
       const key = `console:run:${id}:${view.turn}`;
       const stored = await this.console.store.get(key);
-      const existing = historicalReceipt(stored);
-      if (existing?.final || existing?.superseded) return;
+      let existing;
+      try {
+        existing = historicalReceipt(stored);
+      } catch {
+        // Keep malformed evidence untouched. A later turn must not be held by it.
+        this.warn("DELIVERY_INVALID", "deliver-view");
+        return "warning" as const;
+      }
+      if (existing?.final || existing?.superseded)
+        return deliveryWarning(existing as RunReceipt);
       // Valid legacy rows may predate the required delivery context. Upgrade in
       // place without dropping accepted IDs or pending-send ambiguity markers.
       let delivery: RunReceipt | undefined = existing
@@ -528,11 +604,15 @@ export class RunDelivery {
         priorTurn(mapping.activeTurn, view.turn) &&
         !previous
       ) {
-        const prior = historicalReceipt(
-          await this.console.store.get(
-            `console:run:${id}:${mapping.activeTurn}`,
-          ),
+        const priorStored = await this.console.store.get(
+          `console:run:${id}:${mapping.activeTurn}`,
         );
+        let prior;
+        try {
+          prior = historicalReceipt(priorStored);
+        } catch {
+          this.warn("DELIVERY_INVALID", "deliver-view");
+        }
         if (prior && !prior.final)
           await this.console.store.set(
             `console:run:${id}:${mapping.activeTurn}`,
@@ -553,7 +633,13 @@ export class RunDelivery {
             // Numeric current/future rows belong to replay, not migration. Old
             // opaque keys have no provable order: clear legacy controls only.
             if (!isPrior && /^\d+$/.test(turn)) continue;
-            const old = historicalReceipt(stored);
+            let old;
+            try {
+              old = historicalReceipt(stored);
+            } catch {
+              this.warn("DELIVERY_INVALID", "deliver-view");
+              continue;
+            }
             if (!old) continue;
             retired.push(
               old.messageId,
@@ -570,9 +656,13 @@ export class RunDelivery {
           this.activations.set(id, activation);
         } else if (previous && priorTurn(previous.view.turn, view.turn)) {
           const priorKey = `console:run:${id}:${previous.view.turn}`;
-          const prior = historicalReceipt(
-            await this.console.store.get(priorKey),
-          );
+          const priorStored = await this.console.store.get(priorKey);
+          let prior;
+          try {
+            prior = historicalReceipt(priorStored);
+          } catch {
+            this.warn("DELIVERY_INVALID", "deliver-view");
+          }
           if (prior && !prior.final && !prior.superseded)
             await this.console.store.set(priorKey, {
               ...prior,
@@ -609,16 +699,21 @@ export class RunDelivery {
         }
         if (!view.final) {
           this.console.active.set(id, { view, draftId: delivery.draftId });
-          if (!delivery.messageId) {
-            const sent = messageResult(
-              await this.console.api.call("sendMessage", {
-                ...this.console.params(mapping),
-                text: EMPTY_MESSAGE_HTML,
-                parse_mode: "HTML",
-                disable_notification: true,
-                reply_markup: this.console.controls(id, mapping, true),
-              }),
-            );
+          if (!delivery.messageId && !delivery.quarantine) {
+            let sent;
+            try {
+              sent = messageResult(
+                await this.console.api.call("sendMessage", {
+                  ...this.console.params(mapping),
+                  text: EMPTY_MESSAGE_HTML,
+                  parse_mode: "HTML",
+                  disable_notification: true,
+                  reply_markup: this.console.controls(id, mapping, true),
+                }),
+              );
+            } catch (error) {
+              throw new SendFailure(error);
+            }
             delivery.messageId = sent.message_id;
             await this.console.store.set(key, delivery);
             await this.cosmetic(() =>
@@ -637,7 +732,7 @@ export class RunDelivery {
           if (!unsupported && this.console.draftsUnsupported)
             await this.cosmetic(() => this.log(mapping, delivery, view, key));
           await this.console.store.set(key, delivery);
-          return;
+          return deliveryWarning(delivery);
         }
         // Committed messages are already durable. A stopped current attempt is
         // separate output, even when an earlier assistant message was delivered.
@@ -666,7 +761,11 @@ export class RunDelivery {
             );
           await this.cosmetic(() => this.log(mapping, delivery, view, key));
           await this.finishPreview(mapping, delivery, view);
-          return;
+          return deliveryWarning(delivery);
+        }
+        if (delivery.quarantine) {
+          this.console.active.delete(id);
+          return "warning" as const;
         }
         // Persist each sent chunk before proceeding: retries never resend an
         // already delivered answer prefix, and failure never deletes the preview.
@@ -752,6 +851,18 @@ export class RunDelivery {
           }
         }
       } catch (e) {
+        if (e instanceof SendFailure && !this.console.closed) {
+          delivery.quarantine = deliveryDisposition(e.original);
+          await this.console.store.set(key, delivery);
+          this.warn(
+            delivery.quarantine === "uncertain"
+              ? "DELIVERY_UNCERTAIN"
+              : "DELIVERY_REJECTED",
+            "deliver-view",
+          );
+          this.console.active.delete(id);
+          return "warning" as const;
+        }
         if (!missingTopic(e)) throw e;
         await this.console.save(id, { ...mapping, deleted: true });
         this.console.active.delete(id);

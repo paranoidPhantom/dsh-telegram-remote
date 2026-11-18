@@ -21,6 +21,7 @@ import { RuntimeStatusWriter } from "./host/runtime-status.js";
 import {
   startupEventSchema,
   startupFailure,
+  startupErrorType,
   type StartupEvent,
 } from "./protocol/startup.js";
 import { ResourceRegistry } from "./host/resources.js";
@@ -236,14 +237,34 @@ export async function apply<Handle>(
     );
     const text = encodeJson(payload, 10 * 1024 * 1024),
       bytes = Buffer.from(text);
-    if (bytes.length < 192 * 1024) {
-      const result = object(
-        await peer.request("run.push", payload, {
+    const request = async (
+      method: "run.push" | "run.chunk" | "run.chunk.commit",
+      params: JsonValue,
+    ) => {
+      try {
+        return await peer.request(method, params, {
           signal,
-          timeoutMs: DELIVERY_TIMEOUT_MS,
-        }),
-      );
-      if (result.status !== "delivered" && result.status !== "detached")
+          ...(method === "run.chunk" ? {} : { timeoutMs: DELIVERY_TIMEOUT_MS }),
+        });
+      } catch (error) {
+        trace({
+          stage: "replay",
+          outcome: "failed",
+          operation: "send-view",
+          rpcMethod: method,
+          ...startupFailure(error),
+          ...startupErrorType(error),
+        });
+        throw error;
+      }
+    };
+    if (bytes.length < 192 * 1024) {
+      const result = object(await request("run.push", payload));
+      if (
+        result.status !== "delivered" &&
+        result.status !== "detached" &&
+        result.status !== "warning"
+      )
         throw new ProtocolError(
           "DELIVERY_ACK",
           "Invalid delivery acknowledgement",
@@ -254,29 +275,20 @@ export async function apply<Handle>(
       size = 48 * 1024,
       count = Math.ceil(bytes.length / size);
     for (let index = 0; index < count; index++)
-      await peer.request(
-        "run.chunk",
-        {
-          transferId,
-          index,
-          count,
-          data: bytes
-            .subarray(index * size, (index + 1) * size)
-            .toString("base64"),
-        },
-        { signal },
-      );
-    const result = object(
-      await peer.request(
-        "run.chunk.commit",
-        { transferId },
-        {
-          signal,
-          timeoutMs: DELIVERY_TIMEOUT_MS,
-        },
-      ),
-    );
-    if (result.status !== "delivered" && result.status !== "detached")
+      await request("run.chunk", {
+        transferId,
+        index,
+        count,
+        data: bytes
+          .subarray(index * size, (index + 1) * size)
+          .toString("base64"),
+      });
+    const result = object(await request("run.chunk.commit", { transferId }));
+    if (
+      result.status !== "delivered" &&
+      result.status !== "detached" &&
+      result.status !== "warning"
+    )
       throw new ProtocolError(
         "DELIVERY_ACK",
         "Invalid delivery acknowledgement",
@@ -613,7 +625,46 @@ export async function apply<Handle>(
     };
     // One catch-up lane per session. Durable boundaries are reconstructed from
     // authoritative events, not held in a lossy progress queue. Cursor advances
-    // only after child onRun has persisted its delivery receipts.
+    // only after child onRun has persisted delivery receipts or an explicit
+    // quarantine acknowledgement. A warning is processed, never delivered.
+    const replayInfrastructureErrors = new WeakSet<object>();
+    const replayFatal = (error: unknown) =>
+      (typeof error === "object" &&
+        error !== null &&
+        (replayInfrastructureErrors.has(error) ||
+          (error as { code?: unknown }).code === "CANCELLED")) ||
+      [
+        "ABORTED",
+        "TIMEOUT",
+        "CLOSED",
+        "CHILD_OFFLINE",
+        "TRANSPORT_ERROR",
+        "PENDING_LIMIT",
+        "QUEUE_LIMIT",
+        "ECONNRESET",
+        "ECONNREFUSED",
+        "ETIMEDOUT",
+        "EPIPE",
+        "EACCES",
+        "EPERM",
+        "ENOSPC",
+      ].includes(startupFailure(error).code ?? "UNKNOWN");
+    const warnReplay = (
+      operation: NonNullable<StartupEvent["operation"]>,
+      error: unknown,
+      sourceSeq?: number,
+    ) =>
+      trace({
+        stage: "replay",
+        outcome: "warning",
+        operation,
+        ...startupFailure(error),
+        ...startupErrorType(error),
+        ...(replayTopicIndex === undefined
+          ? {}
+          : { topicIndex: replayTopicIndex }),
+        ...(sourceSeq === undefined ? {} : { sourceSeq }),
+      });
     const catchups = new Map<
       string,
       { work: Promise<void>; pending: RpcPeer | undefined }
@@ -628,11 +679,13 @@ export async function apply<Handle>(
         if (
           readyPeer !== peer ||
           signal.aborted ||
-          !(await surface.getTopic(id))
+          !(await replayStep("topic-lookup", () => surface.getTopic(id)))
         )
           return;
         const epoch = ownerEpoch;
-        const saved = await store.get(`console:source:${id}`);
+        const saved = await replayStep("read-cursor", () =>
+          store.get(`console:source:${id}`),
+        );
         const cursor =
           saved &&
           typeof saved === "object" &&
@@ -641,27 +694,48 @@ export async function apply<Handle>(
           typeof saved.seq === "number"
             ? saved.seq
             : -1;
-        const observation = await ctx.sessionQuery.observeSession(id, {
-          signal,
-          projectionMode: "all",
-        });
+        const observation = await replayStep("observe-session", () =>
+          ctx.sessionQuery.observeSession(id, {
+            signal,
+            projectionMode: "all",
+          }),
+        );
         try {
           let state = initialRun();
           let observedTurn = false;
+          let cursorBlocked = false;
           for (let index = 0; index < observation.events.length; index++) {
+            if (readyPeer !== peer || epoch !== ownerEpoch || signal.aborted)
+              return;
             const event = observation.events[index];
             if (!event) continue;
             if (event.type === "turn/start") observedTurn = true;
             if (
               !observedTurn &&
               ["assistant/message", "turn/end"].includes(event.type)
-            )
-              throw new ProtocolError(
-                "SOURCE_INCOMPLETE",
-                "Session observation is missing its turn prefix",
+            ) {
+              cursorBlocked = true;
+              warnReplay(
+                "fold-events",
+                new ProtocolError(
+                  "SOURCE_INCOMPLETE",
+                  "Session observation is missing its turn prefix",
+                ),
+                event.seq ?? index,
               );
-            state = foldRun(state, event);
+              continue;
+            }
             const seq = event.seq ?? index;
+            try {
+              state = foldRun(state, event);
+            } catch (error) {
+              if (replayFatal(error)) throw error;
+              // A malformed historical event is not delivery evidence. Keep the
+              // cursor behind it, but let subsequent valid boundaries be tried.
+              cursorBlocked = true;
+              warnReplay("fold-events", error, seq);
+              continue;
+            }
             if (
               seq <= cursor ||
               !["assistant/message", "turn/end"].includes(event.type)
@@ -669,24 +743,56 @@ export async function apply<Handle>(
               continue;
             if (readyPeer !== peer || epoch !== ownerEpoch || signal.aborted)
               return;
-            const view = semanticRunView({
-              ...state,
-              cwd:
-                observation.header.cwd ?? ctx.workingDirectory.defaultDirectory,
-              elapsed: Math.max(
-                0,
-                ((state.ended || Date.now()) - state.started) / 1000,
-              ),
-            });
-            if ((await sendView(peer, id, view)) !== "delivered") return;
+            let acknowledgement: "delivered" | "detached" | "warning";
+            try {
+              const view = semanticRunView({
+                ...state,
+                cwd:
+                  observation.header.cwd ??
+                  ctx.workingDirectory.defaultDirectory,
+                elapsed: Math.max(
+                  0,
+                  ((state.ended || Date.now()) - state.started) / 1000,
+                ),
+              });
+              acknowledgement = await replayStep(
+                "send-view",
+                () => sendView(peer, id, view),
+                seq,
+              );
+            } catch (error) {
+              if (readyPeer !== peer || epoch !== ownerEpoch || signal.aborted)
+                return;
+              if (replayFatal(error)) throw error;
+              // HANDLER_ERROR and invalid ACKs can hide accepted sends. Later
+              // boundaries may reconcile via child receipts, but cannot certify
+              // this source prefix or enable progress to bypass it.
+              cursorBlocked = true;
+              warnReplay("send-view", error, seq);
+              continue;
+            }
+            if (acknowledgement === "detached") return;
+            if (acknowledgement === "warning")
+              warnReplay("send-view", { code: "OUTPUT_QUARANTINED" }, seq);
             if (readyPeer !== peer || epoch !== ownerEpoch || signal.aborted)
               return;
-            await store.set(`console:source:${id}`, {
-              ownerEpoch: epoch,
+            if (cursorBlocked) continue;
+            await replayStep(
+              "write-cursor",
+              () =>
+                store.set(`console:source:${id}`, {
+                  ownerEpoch: epoch,
+                  seq,
+                }),
               seq,
-            });
+            );
           }
-          if (readyPeer === peer && epoch === ownerEpoch && !signal.aborted) {
+          if (
+            !cursorBlocked &&
+            readyPeer === peer &&
+            epoch === ownerEpoch &&
+            !signal.aborted
+          ) {
             replayWatermarks.set(id, {
               peer,
               turn: state.turn,
@@ -695,7 +801,9 @@ export async function apply<Handle>(
             });
           }
         } finally {
-          observation[Symbol.dispose]();
+          await replayStep("dispose-observation", () =>
+            observation[Symbol.dispose](),
+          );
         }
       };
       const cell: { work: Promise<void>; pending: RpcPeer | undefined } = {
@@ -711,8 +819,12 @@ export async function apply<Handle>(
           } catch (error) {
             // A replacement peer may arrive while the old peer's request fails.
             // Its one dirty slot must survive that failure, not inherit it.
-            if (!cell.pending || cell.pending === next || readyPeer === next)
-              throw error;
+            if (readyPeer !== next || signal.aborted) {
+              if (!cell.pending || cell.pending === next) return;
+              continue;
+            }
+            if (replayFatal(error)) throw error;
+            warnReplay("replay-topic", error);
           }
         }
       });
@@ -727,11 +839,82 @@ export async function apply<Handle>(
         .catch(() => {});
       return work;
     };
+    let replayTopicIndex: number | undefined;
+    const replayStep = async <T>(
+      operation: NonNullable<StartupEvent["operation"]>,
+      task: () => T | Promise<T>,
+      sourceSeq?: number,
+    ): Promise<T> => {
+      const started = performance.now();
+      const tracing =
+        operation === "list-topics" || replayTopicIndex !== undefined;
+      if (tracing)
+        trace({
+          stage: "replay",
+          outcome: "begin",
+          operation,
+          ...(replayTopicIndex === undefined
+            ? {}
+            : { topicIndex: replayTopicIndex }),
+          ...(sourceSeq === undefined ? {} : { sourceSeq }),
+        });
+      try {
+        const result = await task();
+        if (tracing)
+          trace({
+            stage: "replay",
+            outcome: "ok",
+            operation,
+            durationMs: Math.floor(performance.now() - started),
+            ...(replayTopicIndex === undefined
+              ? {}
+              : { topicIndex: replayTopicIndex }),
+            ...(sourceSeq === undefined ? {} : { sourceSeq }),
+          });
+        return result;
+      } catch (error) {
+        if (
+          [
+            "list-topics",
+            "topic-lookup",
+            "read-cursor",
+            "write-cursor",
+            "dispose-observation",
+          ].includes(operation) &&
+          typeof error === "object" &&
+          error !== null
+        )
+          replayInfrastructureErrors.add(error);
+        if (tracing)
+          trace({
+            stage: "replay",
+            outcome: replayFatal(error) ? "failed" : "warning",
+            operation,
+            durationMs: Math.floor(performance.now() - started),
+            ...startupFailure(error),
+            ...startupErrorType(error),
+            ...(replayTopicIndex === undefined
+              ? {}
+              : { topicIndex: replayTopicIndex }),
+            ...(sourceSeq === undefined ? {} : { sourceSeq }),
+          });
+        throw error;
+      }
+    };
     const replay = async (peer: RpcPeer) => {
-      for (const [key] of await store.entries()) {
+      let index = 0;
+      for (const [key] of await replayStep("list-topics", () =>
+        store.entries(),
+      )) {
         if (readyPeer !== peer || signal.aborted) return;
-        if (key.startsWith("console:topic:"))
-          await catchUp(key.slice("console:topic:".length), peer);
+        if (key.startsWith("console:topic:")) {
+          replayTopicIndex = ++index;
+          try {
+            await catchUp(key.slice("console:topic:".length), peer);
+          } finally {
+            replayTopicIndex = undefined;
+          }
+        }
       }
     };
     const rotate = (): Promise<void> => {
@@ -799,6 +982,18 @@ export async function apply<Handle>(
           build: version,
           handlers,
           onStartup: trace,
+          onHandlerError: (method, error) => {
+            const rpcMethod =
+              startupEventSchema.shape.rpcMethod.safeParse(method);
+            trace({
+              stage: "runtime-error",
+              outcome: "failed",
+              operation: "rpc-handler",
+              ...(rpcMethod.success ? { rpcMethod: rpcMethod.data } : {}),
+              ...startupFailure(error),
+              ...startupErrorType(error),
+            });
+          },
           onOffline: report,
           onReady: (peer) => {
             if (signal.aborted || supervisor !== current) return;

@@ -61,7 +61,13 @@ export async function startChild(): Promise<void> {
         });
       return result;
     };
-  const peer = new RpcPeer({ transport, generation, handlers });
+  const peer = new RpcPeer({
+    transport,
+    generation,
+    handlers,
+    onHandlerError: (method, error) =>
+      runtime?.reportHandlerError(method, error),
+  });
   runtime = new ChildRuntime({ peer, generation, build });
   let exiting = false;
   const exit = () => {

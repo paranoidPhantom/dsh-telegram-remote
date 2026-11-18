@@ -204,17 +204,119 @@ test("partial send failure preserves accepted chunk IDs and never ambiguously re
     return original(method, params);
   };
   const outputs = [{ id: "long", text: "A".repeat(5000) }];
-  await assert.rejects(f.run({ outputs }), /ambiguous/);
+  assert.equal(await f.run({ outputs }), "warning");
   const firstReceipt = outputReceipts(f.record("console:run:s:1"))[0];
   assert.ok(firstReceipt);
   const ids = [...firstReceipt.messageIds];
   assert.equal(ids.length, 1);
-  await assert.rejects(
-    f.run({ outputs, final: true }),
-    /automatic resend suppressed/,
+  assert.equal(firstReceipt.quarantine, "uncertain");
+  assert.notEqual(firstReceipt.complete, true);
+  const later = [
+    { id: "later-1", text: "Later committed output" },
+    { id: "later-2", text: "Last committed output" },
+  ];
+  assert.equal(
+    await f.run({ outputs: [...outputs, ...later], final: true }),
+    "warning",
   );
-  assert.equal(attempts, 2);
+  assert.equal(attempts, 4, "only the two later outputs are sent");
   const preservedReceipt = outputReceipts(f.record("console:run:s:1"))[0];
   assert.ok(preservedReceipt);
   assert.deepEqual(preservedReceipt.messageIds, ids);
+  assert.equal(preservedReceipt.quarantine, "uncertain");
+  assert.notEqual(preservedReceipt.complete, true);
+  assert.equal(
+    f.record("console:run:s:1").final,
+    true,
+    "final means processed, not delivered",
+  );
+  assert.ok(
+    outputReceipts(f.record("console:run:s:1"))
+      .slice(1)
+      .every((r) => r.complete),
+  );
+  assert.deepEqual(
+    f.texts().slice(-2),
+    later.map((output) => output.text),
+  );
+  assert.equal(
+    await f.run({ outputs: [...outputs, ...later], final: true }),
+    "warning",
+  );
+  assert.equal(
+    attempts,
+    4,
+    "quarantined and completed outputs never automatically resend",
+  );
+  await f.surface.onRun("s", {
+    turn: 2,
+    outputs: [{ id: "next", text: "Next turn" }],
+    final: true,
+  });
+  assert.equal(f.texts().at(-1), "Next turn");
 });
+
+for (const status of [400, 403]) {
+  test(`definitive ${status} rejection quarantines only that output and continues`, async (t) => {
+    const f = fixture(t);
+    const original = f.api.call;
+    let attempts = 0;
+    f.api.call = async (method, params = {}) => {
+      if (method === "sendMessage" && params.text === "Rejected") {
+        attempts++;
+        throw Object.assign(Error("Telegram rejected send"), {
+          code: status,
+        });
+      }
+      return original(method, params);
+    };
+    const outputs = [
+      { id: "bad", text: "Rejected" },
+      { id: "good", text: "Delivered" },
+    ];
+    assert.equal(await f.run({ outputs, final: true }), "warning");
+    const [bad, good] = outputReceipts(f.record("console:run:s:1"));
+    assert.equal(bad?.quarantine, "rejected");
+    assert.notEqual(bad?.complete, true);
+    assert.equal(bad?.pending, false);
+    assert.deepEqual(bad?.messageIds, []);
+    assert.equal(good?.complete, true);
+    assert.deepEqual(f.texts(), ["Delivered"]);
+    assert.equal(await f.run({ outputs, final: true }), "warning");
+    assert.equal(attempts, 1);
+  });
+}
+
+for (const phase of ["pending", "accepted", "quarantine"] as const) {
+  test(`output ${phase} storage failure rejects instead of acknowledging`, async (t) => {
+    const f = fixture(t);
+    const save = f.store.set;
+    f.store.set = async (key, value) => {
+      const output = value.outputs?.[0];
+      if (
+        key === "console:run:s:1" &&
+        output &&
+        ((phase === "pending" && output.pending && !output.messageIds.length) ||
+          (phase === "accepted" && output.messageIds.length > 0) ||
+          (phase === "quarantine" && output.quarantine))
+      )
+        throw Error("receipt storage unavailable");
+      return save(key, value);
+    };
+    if (phase === "quarantine") {
+      const call = f.api.call;
+      f.api.call = async (method, params = {}) => {
+        if (method === "sendMessage" && params.text === "Committed")
+          throw Error("ambiguous send");
+        return call(method, params);
+      };
+    }
+    await assert.rejects(
+      f.run({ outputs: [{ id: "a", text: "Committed" }], final: true }),
+      /receipt storage unavailable/,
+    );
+    assert.notEqual(f.record("console:run:s:1").final, true);
+    assert.notEqual(f.record("console:run:s:1").outputs?.[0]?.complete, true);
+    if (phase === "pending") assert.ok(!f.texts().includes("Committed"));
+  });
+}

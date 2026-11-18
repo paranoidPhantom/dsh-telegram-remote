@@ -13,6 +13,7 @@ import { WidgetDelivery } from "../widgets/widget-delivery.js";
 import { createTranslator } from "../i18n/bot-i18n.js";
 import {
   startupEventSchema,
+  startupErrorType,
   startupFailure,
   type StartupEvent,
 } from "../protocol/startup.js";
@@ -330,6 +331,21 @@ export class ChildRuntime {
       { signal: this.controller.signal },
     );
   }
+  /** Handler diagnostics go to the Host, never back through child handlers. */
+  async reportHandlerError(method: string, error: unknown): Promise<void> {
+    const rpcMethod = startupEventSchema.shape.rpcMethod.safeParse(method);
+    await this.startup({
+      stage: "runtime-error",
+      outcome: "failed",
+      operation: "rpc-handler",
+      ...(rpcMethod.success && rpcMethod.data
+        ? { rpcMethod: rpcMethod.data }
+        : {}),
+      ...startupFailure(error),
+      ...startupErrorType(error),
+    });
+  }
+
   /** Await diagnostics before proceeding, but never let an unavailable Host stall startup. */
   private async startup(event: StartupEvent): Promise<void> {
     if (this.startupUnavailable) return;
@@ -436,6 +452,13 @@ export class ChildRuntime {
         signal: this.controller.signal,
         getLocale: () => this.settings?.locale,
         toolNameRules: settings.toolNameRules,
+        onDeliveryWarning: (event) => {
+          void this.startup({
+            stage: "runtime-error",
+            outcome: "warning",
+            ...event,
+          });
+        },
       });
       this.surface.runtimeVersion = settings.version;
       this.surface.runtimePid = process.ppid;
@@ -713,7 +736,10 @@ export class ChildRuntime {
     const before = await surface.mapping(value.sessionId);
     if (!before || before.deleted || before.closed)
       return { status: "detached" };
-    await surface.delivery.onRun(value.sessionId, value.view);
+    const deliveryStatus = await surface.delivery.onRun(
+      value.sessionId,
+      value.view,
+    );
     this.controller.signal.throwIfAborted();
     if (surface.closed) throw new Error("Child surface closed during delivery");
     const after = await surface.mapping(value.sessionId);
@@ -725,7 +751,7 @@ export class ChildRuntime {
       after.threadId !== before.threadId
     )
       return { status: "detached" };
-    return { status: "delivered" };
+    return { status: deliveryStatus === "warning" ? "warning" : "delivered" };
   }
   private async refresh(payload: JsonValue): Promise<JsonValue> {
     const value = z.object({ sessionId: z.string() }).parse(payload);

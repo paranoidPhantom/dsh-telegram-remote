@@ -96,6 +96,7 @@ export class TelegramConsole {
     signal,
     getLocale = () => "en",
     toolNameRules = [],
+    onDeliveryWarning,
   }: {
     api: TelegramApiPort;
     bridge: ConsoleBridge;
@@ -104,6 +105,7 @@ export class TelegramConsole {
     signal?: AbortSignal;
     getLocale?: () => unknown;
     toolNameRules?: readonly ToolNameRule[];
+    onDeliveryWarning?: import("./contracts.js").DeliveryPort["warning"];
   }) {
     this.translate = createTranslator(getLocale);
     this.api = api;
@@ -163,6 +165,7 @@ export class TelegramConsole {
     this.delivery = new RunDelivery({
       api,
       store,
+      warning: onDeliveryWarning,
       get toolNameRules() {
         return owner.toolNameRules;
       },

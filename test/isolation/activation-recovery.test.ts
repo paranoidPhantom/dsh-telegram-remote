@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -320,6 +320,18 @@ async function activeFixture(
   return {
     ...mock,
     supervisor,
+    debugStatus: async () => {
+      // The status writer atomically coalesces asynchronously. Wait for its
+      // terminal startup snapshot, not merely the earlier send/dispose callback.
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const snapshot = JSON.parse(
+          await readFile(join(directory, "status.json"), "utf8"),
+        );
+        if (["running", "degraded"].includes(snapshot.state)) return snapshot;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      throw new Error("startup status did not settle");
+    },
     setToken: (value: string) => {
       token = value;
     },
@@ -441,6 +453,270 @@ test(
       assert.equal(mock.supervisor.state, "running");
       assert.equal(mock.supervisor.recoveries, 0);
       assert.equal(mock.rows.has("console:source:s"), false);
+    } finally {
+      await mock.cleanup();
+    }
+  },
+);
+
+test(
+  "topic observation failure warns without blocking the next valid topic",
+  deadlockGuard,
+  async () => {
+    const sent = deferred<void>();
+    const mock = await activeFixture(
+      async (method, payload) => {
+        if (method === "run.push") {
+          assert.equal(record(payload).sessionId, "valid");
+          sent.resolve();
+          return { status: "delivered" };
+        }
+        return null;
+      },
+      (mock) => {
+        replaySetup(mock);
+        mock.rows.set("console:topic:valid", { chatId: 42, threadId: 6 });
+        const observe = mock.ctx.sessionQuery.observeSession;
+        mock.ctx.sessionQuery.observeSession = async (id, options) => {
+          if (id === "s")
+            throw new TypeError("private invalid session details");
+          return observe(id, options);
+        };
+      },
+    );
+    try {
+      await sent.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(mock.rows.get("console:source:valid"), {
+        ownerEpoch: 17,
+        seq: 2,
+      });
+      assert.equal(mock.rows.has("console:source:s"), false);
+      const status = await mock.debugStatus();
+      assert.equal(status.state, "running");
+      assert.equal(status.lastError, null);
+      assert.ok(
+        status.startupLog.some(
+          (event: any) =>
+            event.outcome === "warning" && event.operation === "replay-topic",
+        ),
+      );
+      assert.equal(
+        JSON.stringify(status).includes("private invalid session details"),
+        false,
+      );
+    } finally {
+      await mock.cleanup();
+    }
+  },
+);
+
+for (const chunked of [false, true]) {
+  test(
+    `explicit warning ACK advances processed cursor, not delivered (${chunked ? "chunked" : "direct"})`,
+    deadlockGuard,
+    async () => {
+      const acknowledged = deferred<void>();
+      const methods: string[] = [];
+      const mock = await activeFixture(
+        async (method) => {
+          methods.push(method);
+          if (method === (chunked ? "run.chunk.commit" : "run.push")) {
+            acknowledged.resolve();
+            return { status: "warning" };
+          }
+          return null;
+        },
+        (mock) => {
+          replaySetup(mock);
+          if (chunked) {
+            const observe = mock.ctx.sessionQuery.observeSession;
+            mock.ctx.sessionQuery.observeSession = async (...args) => {
+              const observation = await observe(...args);
+              return {
+                ...observation,
+                events: [
+                  observation.events[0]!,
+                  {
+                    type: "assistant/message",
+                    seq: 2,
+                    data: {
+                      message: {
+                        content: [{ type: "text", text: "x".repeat(200_000) }],
+                      },
+                    },
+                  },
+                ],
+              };
+            };
+          }
+        },
+      );
+      try {
+        await acknowledged.promise;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.deepEqual(mock.rows.get("console:source:s"), {
+          ownerEpoch: 17,
+          seq: 2,
+        });
+        assert.equal(methods.includes("run.chunk.commit"), chunked);
+        const status = await mock.debugStatus();
+        assert.equal(status.state, "running");
+        assert.ok(
+          status.startupLog.some(
+            (event: any) =>
+              event.outcome === "warning" &&
+              event.code === "OUTPUT_QUARANTINED" &&
+              event.sourceSeq === 2,
+          ),
+        );
+      } finally {
+        await mock.cleanup();
+      }
+    },
+  );
+}
+
+for (const failure of ["HANDLER_ERROR", "malformed-event"]) {
+  test(
+    `later same-topic boundary survives ${failure} without certifying failed prefix`,
+    deadlockGuard,
+    async () => {
+      const finished = deferred<void>();
+      let sends = 0;
+      const mock = await activeFixture(
+        async (method) => {
+          if (method !== "run.push") return null;
+          sends++;
+          if (failure === "HANDLER_ERROR" && sends === 1)
+            throw Object.assign(new Error("ambiguous"), {
+              code: "HANDLER_ERROR",
+            });
+          return { status: "delivered" };
+        },
+        (mock) => {
+          replaySetup(mock);
+          const observe = mock.ctx.sessionQuery.observeSession;
+          mock.ctx.sessionQuery.observeSession = async (...args) => {
+            const observation = await observe(...args);
+            return {
+              ...observation,
+              events: [
+                ...observation.events,
+                ...(failure === "malformed-event"
+                  ? [{ type: "assistant/message", seq: 3, data: {} } as any]
+                  : []),
+                {
+                  type: "assistant/message",
+                  seq: 4,
+                  data: {
+                    message: { content: [{ type: "text", text: "later" }] },
+                  },
+                },
+              ],
+              [Symbol.dispose]: () => finished.resolve(),
+            };
+          };
+        },
+      );
+      try {
+        await finished.promise;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(sends, 2);
+        assert.deepEqual(
+          mock.rows.get("console:source:s"),
+          failure === "HANDLER_ERROR" ? undefined : { ownerEpoch: 17, seq: 2 },
+        );
+        assert.equal((await mock.debugStatus()).state, "running");
+      } finally {
+        await mock.cleanup();
+      }
+    },
+  );
+}
+
+test(
+  "warning ACK permits a later same-topic message and delivered cursor",
+  deadlockGuard,
+  async () => {
+    const finished = deferred<void>();
+    let sends = 0;
+    const mock = await activeFixture(
+      async (method) => {
+        if (method !== "run.push") return null;
+        return { status: ++sends === 1 ? "warning" : "delivered" };
+      },
+      (mock) => {
+        replaySetup(mock);
+        const observe = mock.ctx.sessionQuery.observeSession;
+        mock.ctx.sessionQuery.observeSession = async (...args) => {
+          const observation = await observe(...args);
+          return {
+            ...observation,
+            events: [
+              ...observation.events,
+              {
+                type: "assistant/message",
+                seq: 3,
+                data: {
+                  message: {
+                    content: [{ type: "text", text: "fresh valid message" }],
+                  },
+                },
+              },
+            ],
+            [Symbol.dispose]: () => finished.resolve(),
+          };
+        };
+      },
+    );
+    try {
+      await finished.promise;
+      assert.equal(sends, 2);
+      assert.deepEqual(mock.rows.get("console:source:s"), {
+        ownerEpoch: 17,
+        seq: 3,
+      });
+      assert.equal((await mock.debugStatus()).state, "running");
+    } finally {
+      await mock.cleanup();
+    }
+  },
+);
+
+test(
+  "cursor persistence failure remains degraded and never acknowledges source",
+  deadlockGuard,
+  async () => {
+    const mock = await activeFixture(
+      async (method) => (method === "run.push" ? { status: "warning" } : null),
+      (mock) => {
+        replaySetup(mock);
+        const open = mock.ctx.storageDomain.open;
+        mock.ctx.storageDomain.open = async (...args) => {
+          const domain = await open(...args);
+          return {
+            ...domain,
+            table: (name) => {
+              const table = domain.table(name);
+              return {
+                ...table,
+                put: async (key, value) => {
+                  if (key.startsWith("console:source:"))
+                    throw new Error("storage unavailable");
+                  return table.put(key, value);
+                },
+              };
+            },
+          };
+        };
+      },
+    );
+    try {
+      const status = await mock.debugStatus();
+      assert.equal(status.state, "degraded");
+      assert.equal(mock.rows.has("console:source:s"), false);
+      assert.equal(mock.supervisor.recoveries, 0);
     } finally {
       await mock.cleanup();
     }

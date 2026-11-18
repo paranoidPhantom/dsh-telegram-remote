@@ -12,42 +12,47 @@ function fixture(t: test.TestContext) {
   const cleared: number[] = [];
   let next = 100;
   let scans = 0;
-  const surface = new FixtureConsole({
-    ownerId: 1,
-    bridge: {},
-    store: {
-      async get(key) {
-        return structuredClone(data.get(key));
+  const restart = () => {
+    const surface = new FixtureConsole({
+      ownerId: 1,
+      bridge: {},
+      store: {
+        async get(key) {
+          return structuredClone(data.get(key));
+        },
+        async set(key, value) {
+          data.set(key, structuredClone(value));
+        },
+        async entries() {
+          scans++;
+          return [...data];
+        },
       },
-      async set(key, value) {
-        data.set(key, structuredClone(value));
+      api: {
+        async call(method, params = {}) {
+          if (method === "sendMessage") {
+            assert.equal(typeof params.text, "string");
+            sent.push(String(params.text));
+            return { message_id: ++next };
+          }
+          if (
+            method === "editMessageReplyMarkup" &&
+            typeof params.message_id === "number"
+          )
+            cleared.push(params.message_id);
+          return true;
+        },
       },
-      async entries() {
-        scans++;
-        return [...data];
-      },
-    },
-    api: {
-      async call(method, params = {}) {
-        if (method === "sendMessage") {
-          assert.equal(typeof params.text, "string");
-          sent.push(String(params.text));
-          return { message_id: ++next };
-        }
-        if (
-          method === "editMessageReplyMarkup" &&
-          typeof params.message_id === "number"
-        )
-          cleared.push(params.message_id);
-        return true;
-      },
-    },
-  });
-  t.after(() => surface.close());
+    });
+    t.after(() => surface.close());
+    return surface;
+  };
+  const surface = restart();
   const receipt = (turn: number) =>
     historicalReceipt(data.get(`console:run:s:${turn}`));
   return {
     surface,
+    restart,
     data,
     sent,
     cleared,
@@ -81,11 +86,17 @@ test("unfinished legacy receipt upgrades without losing message IDs or ambiguous
       { id: "output:2", hash: "hash", messageIds: [10], pending: true },
     ],
   });
-  await assert.rejects(
-    f.surface.onRun("s", completedView(2)),
-    /ambiguous; automatic resend suppressed/,
+  assert.equal(await f.surface.onRun("s", completedView(2)), "warning");
+  const output = f.receipt(2)?.outputs?.[0];
+  assert.equal(output?.pending, true);
+  assert.equal(output?.quarantine, "uncertain");
+  assert.notEqual(output?.complete, true);
+  assert.deepEqual(output?.messageIds, [10]);
+  assert.equal(
+    f.receipt(2)?.final,
+    true,
+    "processed final is not proof of delivery",
   );
-  assert.equal(f.receipt(2)?.outputs?.[0]?.pending, true);
   assert.deepEqual(f.sent, ["answer 1"]);
 });
 
@@ -137,7 +148,7 @@ test("replaying an existing older receipt does not supersede the newer active re
   assert.deepEqual(f.sent, ["answer 1", "answer 3"]);
 });
 
-test("ambiguous committed output in a newer receipt still rejects after replaying an older turn", async (t) => {
+test("ambiguous newer output is durably quarantined after fresh helper restart without blocking later outputs, turns, or chats", async (t) => {
   const f = fixture(t);
   f.data.set("console:run:s:3", {
     ...pendingReceipt(3),
@@ -146,13 +157,71 @@ test("ambiguous committed output in a newer receipt still rejects after replayin
     ],
   });
   await f.surface.onRun("s", completedView(1));
-  await assert.rejects(
-    f.surface.onRun("s", completedView(3)),
-    /ambiguous; automatic resend suppressed/,
-  );
-  assert.deepEqual(f.sent, ["answer 1"]);
+  await f.surface.close();
+  const recovered = f.restart();
+  const view = {
+    ...completedView(3),
+    outputs: [
+      ...completedView(3).outputs,
+      { id: "later-a", text: "Later A" },
+      { id: "later-b", text: "Later B" },
+    ],
+  };
+  assert.equal(await recovered.onRun("s", view), "warning");
+  assert.deepEqual(f.sent, ["answer 1", "Later A", "Later B"]);
   assert.equal(f.receipt(3)?.superseded, undefined);
-  assert.equal(f.receipt(3)?.outputs?.[0]?.pending, true);
+  const [uncertain, ...later] = f.receipt(3)?.outputs ?? [];
+  assert.equal(uncertain?.pending, true);
+  assert.equal(uncertain?.quarantine, "uncertain");
+  assert.notEqual(uncertain?.complete, true);
+  assert.deepEqual(uncertain?.messageIds, [303]);
+  assert.ok(later.every((output) => output.complete));
+  assert.equal(f.receipt(3)?.final, true);
+  await recovered.close();
+  const again = f.restart();
+  assert.equal(await again.onRun("s", view), "warning");
+  assert.deepEqual(
+    f.sent,
+    ["answer 1", "Later A", "Later B"],
+    "no quarantined resend after another restart",
+  );
+  assert.deepEqual(f.receipt(3)?.outputs?.[0]?.messageIds, [303]);
+  await again.onRun("s", completedView(4));
+  f.data.set("console:topic:other", { chatId: 7, threadId: 8 });
+  await again.onRun("other", {
+    turn: 1,
+    final: true,
+    outputs: [{ id: "other-output", text: "Other chat" }],
+  });
+  assert.deepEqual(f.sent, [
+    "answer 1",
+    "Later A",
+    "Later B",
+    "answer 4",
+    "Other chat",
+  ]);
+  assert.equal(f.receipt(4)?.outputs?.[0]?.complete, true);
+  assert.equal(
+    historicalReceipt(f.data.get("console:run:other:1"))?.outputs?.[0]
+      ?.complete,
+    true,
+  );
+});
+
+test("malformed legacy receipt warns without rewriting or resending and does not block a valid later turn", async (t) => {
+  const f = fixture(t);
+  const malformed = {
+    messageId: 17,
+    outputs: [{ id: "bad", messageIds: "invalid" }],
+  };
+  f.data.set("console:run:s:1", structuredClone(malformed));
+  assert.equal(await f.surface.onRun("s", completedView(1)), "warning");
+  assert.deepEqual(f.data.get("console:run:s:1"), malformed);
+  assert.deepEqual(f.sent, []);
+  await f.surface.onRun("s", completedView(2));
+  assert.deepEqual(f.sent, ["answer 2"]);
+  assert.deepEqual(f.data.get("console:run:s:1"), malformed);
+  assert.equal(f.receipt(2)?.outputs?.[0]?.complete, true);
 });
 
 test("replaying an older turn does not supersede a newer in-memory active receipt", async (t) => {

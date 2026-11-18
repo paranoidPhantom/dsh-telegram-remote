@@ -749,7 +749,7 @@ test("long final chunks preserve all UTF16 text and controls only on last chunk"
   assert.ok(sends.at(-1)!.params.reply_markup);
 });
 
-test("failed final send keeps placeholder and older answer, retry sends answer once", async (t) => {
+test("uncertain final send keeps placeholder and older answer without blind resend", async (t) => {
   const f = fixture();
   t.after(() => f.console.close());
   await f.open();
@@ -768,9 +768,13 @@ test("failed final send keeps placeholder and older answer, retry sends answer o
       throw new Error("network");
     return original(method, params);
   };
-  await assert.rejects(
-    f.console.onRun("s1", { turn: "new", final: true, answer: "new answer" }),
-    /network/,
+  assert.equal(
+    await f.console.onRun("s1", {
+      turn: "new",
+      final: true,
+      answer: "new answer",
+    }),
+    "warning",
   );
   assert.ok(!f.calls.some((c) => c.method === "deleteMessage"));
   f.console.api.call = original;
@@ -790,7 +794,17 @@ test("failed final send keeps placeholder and older answer, retry sends answer o
         c.method === "sendMessage" &&
         requiredField(c.params.text) === "new answer",
     ).length,
-    1,
+    0,
+  );
+  await f.console.onRun("s1", {
+    turn: "next",
+    final: true,
+    answer: "later answer",
+  });
+  assert.ok(
+    f.calls.some(
+      (c) => c.method === "sendMessage" && c.params.text === "later answer",
+    ),
   );
 });
 

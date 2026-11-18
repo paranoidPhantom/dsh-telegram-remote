@@ -30,7 +30,7 @@ export const startupStages = [
 export const startupEventSchema = z
   .object({
     stage: z.enum(startupStages),
-    outcome: z.enum(["begin", "ok", "failed", "skipped", "info"]),
+    outcome: z.enum(["begin", "ok", "failed", "skipped", "info", "warning"]),
     durationMs: z
       .number()
       .int()
@@ -80,8 +80,64 @@ export const startupEventSchema = z
         "SELF_SIGNED_CERT_IN_CHAIN",
         "ERR_TLS_CERT_ALTNAME_INVALID",
         "TELEGRAM_REJECTED",
+        "SOURCE_INCOMPLETE",
+        "DELIVERY_ACK",
+        "CHILD_OFFLINE",
+        "INVALID_PARAMS",
+        "UNKNOWN_METHOD",
+        "QUEUE_LIMIT",
+        "INVALID_RESULT",
+        "OUTPUT_QUARANTINED",
+        "DELIVERY_UNCERTAIN",
+        "DELIVERY_REJECTED",
+        "DELIVERY_INVALID",
       ])
       .optional(),
+    operation: z
+      .enum([
+        "list-topics",
+        "topic-lookup",
+        "read-cursor",
+        "observe-session",
+        "fold-events",
+        "send-view",
+        "write-cursor",
+        "dispose-observation",
+        "rpc-handler",
+        "replay-topic",
+        "deliver-output",
+        "deliver-view",
+        "delivery-cosmetic",
+      ])
+      .optional(),
+    rpcMethod: z
+      .enum([
+        "runtime.initialize",
+        "run.push",
+        "run.chunk",
+        "run.chunk.commit",
+        "session.refresh",
+        "bridge.metadata",
+        "storage.namespace",
+        "credentials.read",
+        "resources.read",
+        "runtime.acquireLease",
+      ])
+      .optional(),
+    errorType: z
+      .enum([
+        "Error",
+        "TypeError",
+        "RangeError",
+        "SyntaxError",
+        "ZodError",
+        "ProtocolError",
+        "AbortError",
+        "TelegramRequestError",
+      ])
+      .optional(),
+    topicIndex: z.number().int().nonnegative().optional(),
+    sourceSeq: z.number().int().optional(),
     statusCode: z.number().int().min(100).max(599).optional(),
     language: z.enum(["", "en", "zh", "ru"]).optional(),
     pid: z.number().int().positive().optional(),
@@ -127,6 +183,21 @@ export function startupFailure(
     return { code: "UNKNOWN" };
   } catch {
     return { code: "UNKNOWN" };
+  }
+}
+
+export function startupErrorType(
+  error: unknown,
+): Pick<StartupEvent, "errorType"> {
+  try {
+    const name =
+      error && typeof error === "object"
+        ? (error as { name?: unknown }).name
+        : undefined;
+    const parsed = startupEventSchema.shape.errorType.safeParse(name);
+    return parsed.success && parsed.data ? { errorType: parsed.data } : {};
+  } catch {
+    return {};
   }
 }
 

@@ -36,6 +36,7 @@ export interface SupervisorOptions {
   launch?: typeof fork;
   handlers?: Record<string, RpcHandler>;
   onStartup?: StartupObserver;
+  onHandlerError?: (method: string, error: unknown) => void | Promise<void>;
   onReady?: (peer: RpcPeer) => void;
   onOffline?: (error: Error) => void;
 }
@@ -268,6 +269,7 @@ export class ChildSupervisor {
       const peer = new RpcPeer({
         transport: guarded,
         generation: this.generation,
+        onHandlerError: this.options.onHandlerError,
         handlers: {
           ...this.options.handlers,
           "runtime.hello": async () => ({ generation: this.generation }),

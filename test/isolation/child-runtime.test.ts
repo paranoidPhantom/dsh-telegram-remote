@@ -7,6 +7,31 @@ import { TelegramAdapter } from "../../src/telegram/adapter.js";
 import type { JsonValue } from "../../src/protocol/json.js";
 import type { RpcRequestOptions } from "../../src/protocol/rpc.js";
 
+test("handler failure reports safe method and cause before generic RPC replacement", async () => {
+  const events: JsonValue[] = [];
+  const runtime = new ChildRuntime({
+    generation: "g",
+    build: "b",
+    peer: {
+      request: async (_method, payload) => {
+        events.push(payload);
+        return null;
+      },
+    },
+  });
+  await runtime.reportHandlerError(
+    "run.push",
+    Object.assign(new TypeError("SECRET token URL"), { code: 403 }),
+  );
+  const event = events[0] as Record<string, JsonValue>;
+  assert.equal(event.rpcMethod, "run.push");
+  assert.equal(event.code, "TELEGRAM_REJECTED");
+  assert.equal(event.statusCode, 403);
+  assert.equal(event.errorType, "TypeError");
+  assert.ok(!JSON.stringify(events).includes("SECRET"));
+  await runtime.shutdown();
+});
+
 test("child startup reports sanitized ordered stages and nonfatal command failure", async () => {
   const events: Record<string, JsonValue>[] = [];
   const order: string[] = [];

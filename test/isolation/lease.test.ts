@@ -13,7 +13,32 @@ import {
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BotLease } from "../../src/host/lease.js";
+import { BotLease, leasePermissionsValid } from "../../src/host/lease.js";
+
+test("Windows synthetic directory and file modes are not interpreted as POSIX ACLs", () => {
+  for (const mode of [0o40777, 0o40666, 0o100666])
+    assert.equal(leasePermissionsValid({ mode, uid: 0 }, "win32", 1000), true);
+  assert.equal(
+    leasePermissionsValid({ mode: 0o40700, uid: 1000 }, "linux", 1000),
+    true,
+  );
+  assert.equal(
+    leasePermissionsValid({ mode: 0o100600, uid: 1000 }, "darwin", 1000),
+    true,
+  );
+  assert.equal(
+    leasePermissionsValid({ mode: 0o40755, uid: 1000 }, "linux", 1000),
+    false,
+  );
+  assert.equal(
+    leasePermissionsValid({ mode: 0o100644, uid: 1000 }, "darwin", 1000),
+    false,
+  );
+  assert.equal(
+    leasePermissionsValid({ mode: 0o40700, uid: 0 }, "linux", 1000),
+    false,
+  );
+});
 
 test("bot lease excludes competing local activations and releases only its own generation", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "telegram-lease-"));
@@ -176,10 +201,11 @@ test("lease directory must be private and cannot itself be a symlink", async (t)
     BotLease.acquire({ directory: alias, botId: 123, generation: "next" }),
     /directory/i,
   );
+  if (process.platform === "win32") return; // chmod does not set POSIX mode bits on Windows.
   await chmod(root, 0o755);
   await assert.rejects(
     BotLease.acquire({ directory: root, botId: 123, generation: "next" }),
-    /privately owned/i,
+    /platform permissions/i,
   );
   await chmod(root, 0o700);
 });

@@ -41,6 +41,9 @@ export interface DeliveryCall {
 interface OutputReceipt {
   id: string;
   messageIds: number[];
+  pending?: boolean;
+  complete?: boolean;
+  quarantine?: "uncertain" | "rejected" | "invalid";
 }
 
 interface StoredDelivery {
@@ -100,13 +103,17 @@ export function deliveryFixture(
       return [...data];
     },
   };
-  const surface = new TelegramConsole({
-    api,
-    store,
-    bridge: {},
-    ...(options.ownerId === undefined ? {} : { ownerId: options.ownerId }),
-  });
-  t.after(() => surface.close());
+  const restart = () => {
+    const surface = new TelegramConsole({
+      api,
+      store,
+      bridge: {},
+      ...(options.ownerId === undefined ? {} : { ownerId: options.ownerId }),
+    });
+    t.after(() => surface.close());
+    return surface;
+  };
+  const surface = restart();
   const record = (key: string) => {
     const value = data.get(key);
     assert.ok(value, `Expected stored delivery ${key}`);
@@ -116,6 +123,8 @@ export function deliveryFixture(
     surface,
     console: surface,
     api,
+    store,
+    restart,
     data,
     calls,
     record,

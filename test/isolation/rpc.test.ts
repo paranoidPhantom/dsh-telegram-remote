@@ -177,6 +177,96 @@ test(
 );
 
 test(
+  "RPC handler observer receives the original error and completes before the generic reply",
+  deadlockGuard,
+  async (t) => {
+    const transport = new ControlledTransport();
+    const original = Object.assign(new Error("fixture-private-token"), {
+      code: "ECONNRESET",
+    });
+    const observed = deferred<void>();
+    const finish = deferred<void>();
+    const server = new RpcPeer({
+      transport,
+      generation,
+      handlers: {
+        explode: async () => {
+          throw original;
+        },
+      },
+      onHandlerError: async (method, error) => {
+        assert.equal(method, "explode");
+        assert.equal(error, original);
+        observed.resolve();
+        await finish.promise;
+      },
+    });
+    t.after(() => server.close());
+    transport.receive(
+      envelope("request", "observed-error", {
+        method: "explode",
+        params: null,
+      }),
+    );
+    await observed.promise;
+    assert.equal(transport.sent.length, 0);
+    finish.resolve();
+    assert.deepEqual(record(await transport.nextSent()).payload, {
+      code: "HANDLER_ERROR",
+      message: "RPC handler failed",
+    });
+  },
+);
+
+for (const mode of ["throws", "rejects", "rejects after deadline"] as const) {
+  test(
+    `RPC observer that ${mode} cannot change the generic error or escape`,
+    deadlockGuard,
+    async (t) => {
+      const transport = new ControlledTransport();
+      const late = deferred<void>();
+      let calls = 0;
+      const server = new RpcPeer({
+        transport,
+        generation,
+        handlers: {
+          explode: async () => {
+            throw new Error("fixture-handler-secret");
+          },
+          echo: async (payload) => payload,
+        },
+        onHandlerError: () => {
+          calls++;
+          if (mode === "throws") throw new Error("fixture-observer-secret");
+          if (mode === "rejects")
+            return Promise.reject(new Error("fixture-observer-secret"));
+          return late.promise;
+        },
+      });
+      t.after(() => server.close());
+      transport.receive(
+        envelope("request", "observer-failure", {
+          method: "explode",
+          params: null,
+        }),
+      );
+      assert.deepEqual(record(await transport.nextSent()).payload, {
+        code: "HANDLER_ERROR",
+        message: "RPC handler failed",
+      });
+      assert.equal(calls, 1);
+      // The reply must not wait forever, and a later rejection remains handled.
+      if (mode === "rejects after deadline")
+        late.reject(new Error("fixture-late-observer-secret"));
+      transport.receive(
+        envelope("request", "still-open", { method: "echo", params: "ok" }),
+      );
+      assert.equal(record(await transport.nextSent()).payload, "ok");
+    },
+  );
+}
+
+test(
   "RPC wire error result becomes a coded local rejection",
   deadlockGuard,
   async (t) => {

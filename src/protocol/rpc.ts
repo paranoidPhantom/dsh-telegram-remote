@@ -24,6 +24,8 @@ export interface RpcPeerOptions {
   transport: WireTransport;
   generation: string;
   handlers?: Record<string, RpcHandler>;
+  /** Local-only diagnostics, awaited for at most 250 ms; failures are ignored. */
+  onHandlerError?: (method: string, error: unknown) => void | Promise<void>;
   maxPending?: number;
   maxQueuedBytes?: number;
   timeoutMs?: number;
@@ -149,6 +151,7 @@ export class RpcPeer {
   readonly #transport: WireTransport;
   readonly #generation: string;
   readonly #handlers = new Map<string, RpcHandler>();
+  readonly #onHandlerError: RpcPeerOptions["onHandlerError"];
   readonly #maxPending: number;
   readonly #maxQueuedBytes: number;
   readonly #timeoutMs: number;
@@ -164,6 +167,7 @@ export class RpcPeer {
       throw new ProtocolError("INVALID_OPTIONS", "Invalid RPC generation");
     }
     this.#generation = options.generation;
+    this.#onHandlerError = options.onHandlerError;
     this.#maxPending = boundedInteger(
       options.maxPending ?? MAX_PENDING,
       MAX_PENDING,
@@ -381,11 +385,30 @@ export class RpcPeer {
     }
     const controller = new AbortController();
     this.#running.set(id, controller);
-    void this.#run(id, handler, payload.params, controller);
+    void this.#run(id, payload.method, handler, payload.params, controller);
+  }
+
+  async #observeHandlerError(method: string, cause: unknown): Promise<void> {
+    if (!this.#onHandlerError) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        // Promise adoption also catches synchronous throws and late rejections.
+        Promise.resolve().then(() => this.#onHandlerError?.(method, cause)),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 250);
+        }),
+      ]);
+    } catch {
+      // Diagnostics never change the wire reply or runtime control flow.
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async #run(
     id: RequestId,
+    method: string,
     handler: RpcHandler,
     params: JsonValue,
     controller: AbortController,
@@ -394,7 +417,8 @@ export class RpcPeer {
       let result: JsonValue;
       try {
         result = await handler(params, controller.signal);
-      } catch {
+      } catch (cause: unknown) {
+        await this.#observeHandlerError(method, cause);
         if (!controller.signal.aborted && !this.#closed) {
           this.#reply("error", id, {
             code: "HANDLER_ERROR",

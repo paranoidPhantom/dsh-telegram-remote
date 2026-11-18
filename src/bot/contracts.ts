@@ -126,6 +126,8 @@ export interface OutputReceipt {
   messageIds: number[];
   pending?: boolean;
   complete?: boolean;
+  /** Terminal delivery exception, not success; retained to prevent blind replay. */
+  quarantine?: "uncertain" | "rejected" | "invalid";
   /** Tool-log boundary captured before sending this committed output. */
   segmentEnd?: number;
 }
@@ -137,6 +139,8 @@ export interface RunReceipt extends TopicContext {
   answerPreview?: boolean;
   final?: boolean;
   superseded?: boolean;
+  /** Legacy final delivery exception; never treated as accepted output. */
+  quarantine?: "uncertain" | "rejected" | "invalid";
   outputs?: OutputReceipt[];
   finalMessageIds?: number[];
   logMessageIds?: number[];
@@ -481,6 +485,10 @@ export interface DeliveryPort extends QueuePort {
   readonly store: ConsoleStore;
   readonly t: Translator;
   readonly closed: boolean;
+  warning?(event: {
+    code: "DELIVERY_UNCERTAIN" | "DELIVERY_REJECTED" | "DELIVERY_INVALID";
+    operation: "deliver-output" | "deliver-view" | "delivery-cosmetic";
+  }): void;
   draftsUnsupported: boolean;
   readonly active: Map<SessionId, ActiveRun>;
   readonly clearedMarkup: Set<string>;
@@ -585,13 +593,21 @@ function isOutputReceipt(value: unknown): value is OutputReceipt {
     isString(value.hash) &&
     numberArray(value.messageIds) &&
     optionalFields(value, ["segmentEnd"], isNumber) &&
-    optionalFields(value, ["pending", "complete"], isBoolean)
+    optionalFields(value, ["pending", "complete"], isBoolean) &&
+    (value.quarantine === undefined ||
+      value.quarantine === "uncertain" ||
+      value.quarantine === "rejected" ||
+      value.quarantine === "invalid")
   );
 }
 function isHistoricalReceipt(value: unknown): value is HistoricalRunReceipt {
   return (
     isRecord(value) &&
     optionalFields(value, ["id", "lastOutputHash"], isString) &&
+    (value.quarantine === undefined ||
+      value.quarantine === "uncertain" ||
+      value.quarantine === "rejected" ||
+      value.quarantine === "invalid") &&
     (value.logFormat === undefined || value.logFormat === "activity-v1") &&
     optionalFields(
       value,

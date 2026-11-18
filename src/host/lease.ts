@@ -14,6 +14,23 @@ interface OwnedFile {
   inode: number;
   device: number;
 }
+/** Windows mode/uid are synthetic, not ACLs. POSIX checks apply only on POSIX.
+ * Windows access is enforced by the inherited ACL of the user's temp directory;
+ * exclusive creation and owner identity checks remain mandatory on all platforms.
+ */
+export function leasePermissionsValid(
+  info: { mode: number; uid: number },
+  platform: NodeJS.Platform = process.platform,
+  uid: number | undefined = typeof process.getuid === "function"
+    ? process.getuid()
+    : undefined,
+): boolean {
+  return (
+    platform === "win32" ||
+    ((info.mode & 0o077) === 0 && (uid === undefined || info.uid === uid))
+  );
+}
+
 function record(value: unknown): value is LeaseRecord {
   if (!value || typeof value !== "object") return false;
   return (
@@ -61,6 +78,11 @@ async function inspect(path: string): Promise<OwnedFile> {
   try {
     // Read metadata and bytes from the same no-follow descriptor. Never read a
     // symlink target, device or FIFO, or accept a hardlink into another file.
+    // O_NOFOLLOW is not available on every Windows runtime. Reject links before
+    // opening and compare the opened descriptor with the pathname afterwards.
+    const before = await lstat(path);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1)
+      throw ambiguous(path);
     const file = await open(
       path,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -71,8 +93,17 @@ async function inspect(path: string): Promise<OwnedFile> {
         !info.isFile() ||
         info.nlink !== 1 ||
         info.size > 4096 ||
-        (info.mode & 0o077) !== 0 ||
-        (typeof process.getuid === "function" && info.uid !== process.getuid())
+        !leasePermissionsValid(info) ||
+        info.ino !== before.ino ||
+        info.dev !== before.dev
+      )
+        throw ambiguous(path);
+      const current = await lstat(path);
+      if (
+        !current.isFile() ||
+        current.isSymbolicLink() ||
+        current.ino !== info.ino ||
+        current.dev !== info.dev
       )
         throw ambiguous(path);
       const value: unknown = JSON.parse(await file.readFile("utf8"));
@@ -186,13 +217,12 @@ export class BotLease {
     const directoryInfo = await lstat(requested);
     if (
       !directoryInfo.isDirectory() ||
-      (directoryInfo.mode & 0o077) !== 0 ||
-      (typeof process.getuid === "function" &&
-        directoryInfo.uid !== process.getuid())
+      directoryInfo.isSymbolicLink() ||
+      !leasePermissionsValid(directoryInfo)
     ) {
       throw new ProtocolError(
         "LEASE_DIRECTORY",
-        "Bot lease directory must be privately owned with mode 0700 and must not be a symlink",
+        "Bot lease directory must be a real directory with valid platform permissions",
       );
     }
     const directory = await realpath(requested);
