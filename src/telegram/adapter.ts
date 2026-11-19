@@ -56,6 +56,9 @@ export interface TelegramAdapterOptions {
   credentialKey: string;
   signal?: AbortSignal;
   createApi?: CreateTelegramApi;
+  /** File-only streaming carrier; redirects must not carry bot credentials. */
+  downloadFetch?: typeof fetch;
+  downloadTimeoutMs?: number;
   /** Numeric-only instrumentation; invoked at send wire-start after scheduler waits. */
   onSendStart?: () => void;
   /** Startup methods only; never emits credentials, API payloads or polling events. */
@@ -97,6 +100,9 @@ function errorFields(error: unknown): Record<string, unknown> {
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
   if (signal.aborted) {
+    // The operation may have started before its argument was evaluated. Observe
+    // a late rejection even when cancellation wins before we attach handlers.
+    void promise.catch(() => {});
     return Promise.reject(
       signal.reason ?? new DOMException("Aborted", "AbortError"),
     );
@@ -180,6 +186,48 @@ export const telegramFetch: typeof fetch = async (url, init) => {
   });
 };
 
+export const MAX_TELEGRAM_DOWNLOAD_BYTES = 10 * 1024 * 1024;
+
+/** Unlike the API JSON carrier, expose a stream so downloads are bounded while
+ * arriving. Native HTTPS does not follow redirects and keeps IPv4 routing. */
+const telegramDownloadFetch: typeof fetch = async (url, init) => {
+  const request = new Request(url, init);
+  const target = new URL(request.url);
+  if (target.origin !== "https://api.telegram.org")
+    throw Error("Unexpected Telegram file origin");
+  return new Promise<Response>((resolve, reject) => {
+    const req = https.request(
+      target,
+      {
+        method: "GET",
+        family: 4,
+        signal: request.signal,
+      },
+      (res) => {
+        const headers = new Headers();
+        for (const [name, value] of Object.entries(res.headers)) {
+          if (Array.isArray(value))
+            value.forEach((v) => headers.append(name, v));
+          else if (value !== undefined) headers.set(name, value);
+        }
+        try {
+          resolve(
+            new Response(Readable.toWeb(res) as ReadableStream<Uint8Array>, {
+              status: res.statusCode,
+              headers,
+            }),
+          );
+        } catch {
+          res.destroy();
+          reject(Error("Telegram file response failed"));
+        }
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+};
+
 /** Only the dynamic console carrier surface is admitted through callWire.
  * Runtime callers validate method-specific parameter fields before this boundary.
  * This list deliberately excludes SDK helpers and Object prototype properties.
@@ -235,6 +283,8 @@ export class TelegramAdapter {
   readonly createApi: CreateTelegramApi;
   readonly now: () => number;
   readonly sleep: (ms: number, signal?: AbortSignal) => Promise<unknown>;
+  private readonly downloadFetch: typeof fetch;
+  private readonly downloadTimeoutMs: number;
   private readonly onSendStart?: () => void;
   private readonly onStartup?: TelegramAdapterOptions["onStartup"];
 
@@ -261,6 +311,8 @@ export class TelegramAdapter {
     createApi = (token, options) => new Api(token, options),
     onSendStart,
     onStartup,
+    downloadFetch = telegramDownloadFetch,
+    downloadTimeoutMs = 40000,
     now = Date.now,
     sleep = (ms, signal) => delay(ms, undefined, { signal }),
   }: TelegramAdapterOptions) {
@@ -270,16 +322,18 @@ export class TelegramAdapter {
     this.createApi = createApi;
     this.onSendStart = onSendStart;
     this.onStartup = onStartup;
+    this.downloadFetch = downloadFetch;
+    this.downloadTimeoutMs = downloadTimeoutMs;
     this.now = now;
     this.sleep = sleep;
   }
 
-  async waitUntil(deadline: () => number): Promise<void> {
+  async waitUntil(deadline: () => number, signal = this.signal): Promise<void> {
     for (;;) {
-      this.signal?.throwIfAborted();
+      signal?.throwIfAborted();
       const ms = deadline() - this.now();
       if (ms <= 0) return;
-      await abortable(this.sleep(ms, this.signal), this.signal);
+      await abortable(this.sleep(ms, signal), signal);
     }
   }
 
@@ -378,11 +432,11 @@ export class TelegramAdapter {
     }
   }
 
-  async acquireOutbound(): Promise<Release> {
-    this.signal?.throwIfAborted();
+  async acquireOutbound(signal = this.signal): Promise<Release> {
+    signal?.throwIfAborted();
     return new Promise<Release>((resolve, reject) => {
       const grant = () => {
-        this.signal?.removeEventListener("abort", abort);
+        signal?.removeEventListener("abort", abort);
         this.outboundActive++;
         let released = false;
         resolve(() => {
@@ -395,14 +449,12 @@ export class TelegramAdapter {
       const abort = () => {
         const index = this.outboundWaiters.indexOf(grant);
         if (index >= 0) this.outboundWaiters.splice(index, 1);
-        reject(
-          this.signal?.reason ?? new DOMException("Aborted", "AbortError"),
-        );
+        reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
       };
       if (this.outboundActive < 4) grant();
       else {
         this.outboundWaiters.push(grant);
-        this.signal?.addEventListener("abort", abort, { once: true });
+        signal?.addEventListener("abort", abort, { once: true });
       }
     });
   }
@@ -423,13 +475,14 @@ export class TelegramAdapter {
     method: string,
     params: ApiParams,
     onStart?: () => void,
+    signal = this.signal,
   ): Promise<unknown> {
     this.signal?.throwIfAborted();
     const bypass = method === "getUpdates" || method === "answerCallbackQuery";
-    const release = bypass ? () => {} : await this.acquireOutbound();
+    const release = bypass ? () => {} : await this.acquireOutbound(signal);
     try {
-      if (!bypass) await this.waitUntil(() => this.cooldownUntil);
-      this.signal?.throwIfAborted();
+      if (!bypass) await this.waitUntil(() => this.cooldownUntil, signal);
+      signal?.throwIfAborted();
       // Resolve credentials only after every scheduling wait: queued work must
       // observe rotation/revocation instead of carrying a stale token to the wire.
       const diagnostic = ["getMe", "getWebhookInfo", "setMyCommands"].includes(
@@ -440,8 +493,11 @@ export class TelegramAdapter {
       const started = performance.now();
       let record: Awaited<ReturnType<TelegramCredentials["readRecord"]>>;
       try {
-        record = await this.credentials.readRecord(this.credentialKey);
-        this.signal?.throwIfAborted();
+        record = await abortable(
+          this.credentials.readRecord(this.credentialKey),
+          signal,
+        );
+        signal?.throwIfAborted();
         if (record?.kind !== "api-key" || !record.key) {
           throw Object.assign(
             Error("Telegram bot credential is not configured"),
@@ -481,7 +537,8 @@ export class TelegramAdapter {
           // Diagnostics must never change transport behavior.
         }
       }
-      return await this.invokeRedacted(api, method, params, record.key);
+      signal?.throwIfAborted();
+      return await this.invokeRedacted(api, method, params, record.key, signal);
     } finally {
       release();
     }
@@ -492,9 +549,10 @@ export class TelegramAdapter {
     method: string,
     params: ApiParams,
     token: string,
+    signal = this.signal,
   ): Promise<unknown> {
     try {
-      return await invokeApi(api, method, params, this.signal);
+      return await invokeApi(api, method, params, signal);
     } catch (error) {
       this.signal?.throwIfAborted();
       const fields = errorFields(error);
@@ -537,6 +595,110 @@ export class TelegramAdapter {
         safe.code = 429;
       }
       throw safe;
+    }
+  }
+
+  /** Download one Telegram-owned file. No URL, token or raw carrier exception
+   * escapes this boundary, including cancellation reasons supplied by callers. */
+  async download(fileId: string): Promise<Uint8Array> {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    this.signal?.addEventListener("abort", abort, { once: true });
+    if (this.signal?.aborted) abort();
+    const timer = setTimeout(abort, this.downloadTimeoutMs);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      controller.signal.throwIfAborted();
+      if (!fileId || fileId.length > 4096) throw Error();
+      const file = errorFields(
+        await abortable(
+          this.requestInternal(
+            "getFile",
+            { file_id: fileId },
+            undefined,
+            controller.signal,
+          ),
+          controller.signal,
+        ),
+      );
+      const path = file.file_path;
+      // Reject local-server paths, URLs, escaping, query/fragment and dot segments.
+      if (
+        typeof path !== "string" ||
+        path.length > 4096 ||
+        !/^[a-zA-Z0-9_/-]+(?:\.[a-zA-Z0-9_-]+)?$/.test(path) ||
+        path.startsWith("/") ||
+        path.split("/").some((part) => !part || part === "." || part === "..")
+      )
+        throw Error();
+      if (
+        file.file_size !== undefined &&
+        (typeof file.file_size !== "number" ||
+          !Number.isSafeInteger(file.file_size) ||
+          file.file_size < 0 ||
+          file.file_size > MAX_TELEGRAM_DOWNLOAD_BYTES)
+      )
+        throw Error();
+      const record = await abortable(
+        this.credentials.readRecord(this.credentialKey),
+        controller.signal,
+      );
+      if (
+        record?.kind !== "api-key" ||
+        !record.key ||
+        !/^[0-9]+:[a-zA-Z0-9_-]+$/.test(record.key)
+      )
+        throw Error();
+      const response = await abortable(
+        this.downloadFetch(
+          `https://api.telegram.org/file/bot${record.key}/${path}`,
+          { signal: controller.signal, redirect: "error" },
+        ).then((response) => {
+          if (controller.signal.aborted) {
+            void response.body?.cancel().catch(() => {});
+            throw Error();
+          }
+          return response;
+        }),
+        controller.signal,
+      );
+      if (!response.ok || response.redirected || !response.body) {
+        void response.body?.cancel().catch(() => {});
+        throw Error();
+      }
+      reader = response.body.getReader();
+      const length = response.headers.get("content-length");
+      if (
+        length !== null &&
+        (!/^\d+$/.test(length) || Number(length) > MAX_TELEGRAM_DOWNLOAD_BYTES)
+      )
+        throw Error();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      for (;;) {
+        const { done, value } = await abortable(
+          reader.read(),
+          controller.signal,
+        );
+        if (done) break;
+        size += value.byteLength;
+        if (size > MAX_TELEGRAM_DOWNLOAD_BYTES) throw Error();
+        chunks.push(value);
+      }
+      const result = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return result;
+    } catch {
+      throw Error("Telegram file download failed");
+    } finally {
+      clearTimeout(timer);
+      this.signal?.removeEventListener("abort", abort);
+      controller.abort();
+      void reader?.cancel().catch(() => {});
     }
   }
 

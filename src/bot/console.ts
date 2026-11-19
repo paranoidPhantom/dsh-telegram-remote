@@ -31,6 +31,7 @@ import type {
   TelegramUpdate,
 } from "./contracts.js";
 import { randomBytes } from "node:crypto";
+import { inboundMedia } from "../files/inbound-media.js";
 import { createTranslator } from "../i18n/bot-i18n.js";
 
 import {
@@ -158,6 +159,7 @@ export class TelegramConsole {
     });
     this.sessionActions = new ConsoleSessions({
       ...messages,
+      forwardPrompt: this.forwardPrompt.bind(this),
       bridge,
       api,
       store,
@@ -803,6 +805,27 @@ export class TelegramConsole {
     return this.sessionActions.requestNew(ctx, undefined, true, prompt);
   }
 
+  async forwardPrompt(id: SessionId, prompt: NativePrompt): Promise<void> {
+    let text = prompt.text;
+    if (prompt.media) {
+      if (!this.api.download || !this.bridge.receiveFile)
+        throw new Error("Inbound media transfer unavailable");
+      const content = await this.api.download(prompt.media.fileId);
+      const path = await this.bridge.receiveFile(
+        id,
+        {
+          name: prompt.media.name,
+          content,
+        },
+        prompt.requestId,
+      );
+      // Quote absolute paths for workspaces containing spaces. Captions are
+      // user text, never Telegram commands or filesystem path authority.
+      text = `@${JSON.stringify(path)}${text ? `\n${text}` : ""}`;
+    }
+    await this.bridge.prompt(id, text, prompt.requestId);
+  }
+
   async requireTopics(ctx: TopicContext) {
     const me = await this.api.call("getMe");
     if (isRecord(me) && me.has_topics_enabled === false) {
@@ -888,12 +911,13 @@ export class TelegramConsole {
         if (message.forum_topic_deleted) this.active.delete(bound.id);
         return;
       }
-      const text = message.text?.trim();
-      if (!text) return;
-      if (await this.questions.reply(message)) return;
+      const media = inboundMedia(message);
+      const text = (media ? message.caption : message.text)?.trim() || "";
+      if (!text && !media) return;
+      if (!media && (await this.questions.reply(message))) return;
       const reasonKey = `${ctx.chatId}:${ctx.threadId}:${message.reply_to_message?.message_id}`;
       const reason = this.reasons.get(reasonKey);
-      if (reason) {
+      if (reason && !media) {
         this.reasons.delete(reasonKey);
         if (reason.expires > Date.now()) {
           if (typeof reason.req.onReason === "function")
@@ -902,7 +926,7 @@ export class TelegramConsole {
         }
         return;
       }
-      const command = text
+      const command = (media ? "" : text)
         .match(/^\/(\w+)(?:@\w+)?(?:\s|$)/)?.[1]
         ?.toLowerCase();
       if (command === "version")
@@ -923,7 +947,11 @@ export class TelegramConsole {
       if (command === "new") return await this.requestNew(ctx);
       if (command === "help") return await this.send(ctx, this.t("help"));
       if (!bound && ctx.threadId && !command) {
-        await this.bindNativeTopic(ctx, { text, requestId });
+        await this.bindNativeTopic(ctx, {
+          text,
+          requestId,
+          ...(media ? { media } : {}),
+        });
         return;
       }
       if (!bound) return await this.send(ctx, this.t("openSessionHint"));
@@ -949,7 +977,11 @@ export class TelegramConsole {
         return;
       }
       if (command) return await this.send(ctx, this.t("unknownCommand"));
-      await this.bridge.prompt(bound.id, text, requestId);
+      await this.forwardPrompt(bound.id, {
+        text,
+        requestId,
+        ...(media ? { media } : {}),
+      });
       if (metadata.running)
         await this.send(ctx, this.t("queued"), {
           reply_markup: {

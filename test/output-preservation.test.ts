@@ -23,7 +23,7 @@ function fixture(t: TestContext) {
       .filter(
         (x) =>
           ["sendMessage", "sendRichMessage"].includes(x.method) &&
-          !x.params.text?.includes('emoji-id="5258121851091043775"'),
+          !x.params.text?.includes('emoji-id="5294363352070367389"'),
       )
       .map((x) => x.params.rich_message?.markdown ?? x.params.text);
   return { ...f, run, texts };
@@ -36,7 +36,7 @@ test("empty real placeholder is one custom emoji while native draft stays textua
   assert.ok(message);
   assert.equal(
     message.params.text,
-    '<tg-emoji emoji-id="5258121851091043775">⏳</tg-emoji>',
+    '<tg-emoji emoji-id="5294363352070367389">⏳</tg-emoji>',
   );
   assert.equal(message.params.parse_mode, "HTML");
   const draft = f.calls.find((c) => c.method === "sendMessageDraft");
@@ -196,7 +196,7 @@ test("partial send failure preserves accepted chunk IDs and never ambiguously re
   f.api.call = async (method, params = {}) => {
     if (
       method === "sendMessage" &&
-      !params.text?.includes('emoji-id="5258121851091043775"') &&
+      !params.text?.includes('emoji-id="5294363352070367389"') &&
       ++attempts === 2
     )
       throw Error("ambiguous network failure");

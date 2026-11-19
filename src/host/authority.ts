@@ -1,3 +1,5 @@
+import { randomUUID, createHash } from "node:crypto";
+import { saveReceivedFile } from "../files/receive-file.js";
 import type { ConsoleBridge, ModelSelection } from "../bot/contracts.js";
 import { encodeJson, ProtocolError, type JsonValue } from "../protocol/json.js";
 import { object, string, integer, wireValue } from "../protocol/values.js";
@@ -41,6 +43,18 @@ function deny(): never {
 export class HostAuthority {
   private closed = false;
   private readonly created = new Set<string>();
+  private readonly uploads = new Map<
+    string,
+    {
+      sessionId: string;
+      actor: Actor;
+      name: string;
+      size: number;
+      bytes: Buffer;
+      offset: number;
+      expires: number;
+    }
+  >();
   private ownerId: number;
   private ownerEpoch: number;
   private generation: string;
@@ -55,6 +69,7 @@ export class HostAuthority {
     if (this.closed) return;
     this.closed = true;
     this.created.clear();
+    this.uploads.clear();
     this.options.approvals.cancelEpoch(this.ownerEpoch);
     this.options.questions?.cancelGeneration(this.generation);
     this.options.resources.revokeGeneration(this.generation);
@@ -106,14 +121,109 @@ export class HostAuthority {
   }
   handlers(): Record<string, RpcHandler> {
     const handlers: Record<string, RpcHandler> = {};
-    const add = (name: string, run: (p: Params) => Promise<JsonValue>) => {
+    const add = (
+      name: string,
+      run: (p: Params, signal: AbortSignal) => Promise<JsonValue>,
+    ) => {
       handlers[name] = async (payload, signal) => {
         if (signal.aborted) deny();
         const p = object(payload);
         this.fence(p);
-        return run(p);
+        return run(p, signal);
       };
     };
+    // Reverse resource transfer: bounded bytes only, never a child-chosen path.
+    for (const action of ["begin", "chunk", "commit", "release"] as const)
+      add(`uploads.${action}`, async (p, signal) => {
+        const actor = this.actor(p);
+        for (const [key, upload] of this.uploads)
+          if (upload.expires < Date.now()) this.uploads.delete(key);
+        if (action === "begin") {
+          const sessionId = string(p.sessionId, "sessionId");
+          await this.bound(p, actor, sessionId);
+          const size = integer(p.size, "size");
+          const name = string(p.name, "name");
+          if (
+            size < 0 ||
+            size > 10 * 1024 * 1024 ||
+            name.length > 1024 ||
+            this.uploads.size >= 4
+          )
+            deny();
+          const id = randomUUID();
+          this.uploads.set(id, {
+            sessionId,
+            actor,
+            name,
+            size,
+            bytes: Buffer.alloc(size),
+            offset: 0,
+            expires: Date.now() + 60_000,
+          });
+          return { id };
+        }
+        const key = string(p.uploadId, "uploadId");
+        const upload = this.uploads.get(key);
+        if (
+          !upload ||
+          upload.actor.chatId !== actor.chatId ||
+          upload.actor.threadId !== actor.threadId
+        )
+          deny();
+        await this.bound(p, actor, upload.sessionId);
+        if (action === "release") {
+          this.uploads.delete(key);
+          return null;
+        }
+        if (action === "chunk") {
+          const data = p.data;
+          if (typeof data !== "string") deny();
+          if (
+            data.length > 87384 ||
+            integer(p.offset, "offset") !== upload.offset
+          )
+            deny();
+          const bytes = Buffer.from(data, "base64");
+          if (
+            bytes.toString("base64") !== data ||
+            !bytes.length ||
+            bytes.length > 65536 ||
+            upload.offset + bytes.length > upload.size
+          )
+            deny();
+          bytes.copy(upload.bytes, upload.offset);
+          upload.offset += bytes.length;
+          upload.expires = Date.now() + 60_000;
+          return null;
+        }
+        if (upload.offset !== upload.size) deny();
+        this.uploads.delete(key);
+        const digest = createHash("sha256").update(upload.bytes).digest("hex");
+        return this.journal.execute(
+          {
+            id: `${string(p.requestId, "requestId")}:media`,
+            ownerEpoch: this.ownerEpoch,
+            kind: encodeJson({
+              sessionId: upload.sessionId,
+              name: upload.name,
+              digest,
+            }),
+            replay: "never",
+          },
+          async () => {
+            const metadata = await bridge.metadata(upload.sessionId);
+            if (!metadata?.cwd) deny();
+            await this.bound(p, actor, upload.sessionId);
+            signal.throwIfAborted();
+            return saveReceivedFile(
+              metadata.cwd,
+              upload.name,
+              upload.bytes,
+              signal,
+            );
+          },
+        );
+      });
     add("questions.answer", async (p) => {
       const actor = this.actor(p);
       const id = string(p.id, "question id");

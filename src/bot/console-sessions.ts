@@ -349,7 +349,7 @@ export class ConsoleSessions {
         while (pending.prompts.length) {
           const prompt = pending.prompts[0];
           if (!prompt) break;
-          await c.bridge.prompt(id, prompt.text, prompt.requestId);
+          await c.forwardPrompt(id, prompt);
           pending.prompts.shift();
         }
         this.initiations.delete(pending.key);

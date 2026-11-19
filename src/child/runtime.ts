@@ -92,12 +92,35 @@ const runSchema = z.object({
   elapsed: z.number().optional(),
   logEnd: z.number().optional(),
 });
+const mediaFileSchema = z.object({
+  file_id: z.string().min(1).max(4096),
+  file_name: z.string().max(1024).optional(),
+  mime_type: z.string().max(256).optional(),
+  file_size: z.number().int().nonnegative().optional(),
+});
 const messageSchema = z.object({
   message_id: z.number().int(),
   chat: z.object({ id: z.number().int(), type: z.string() }),
   from: z.object({ id: z.number().int() }).optional(),
   message_thread_id: z.number().int().optional(),
   text: z.string().optional(),
+  caption: z.string().optional(),
+  photo: z
+    .array(mediaFileSchema.extend({ width: z.number(), height: z.number() }))
+    .max(20)
+    .optional(),
+  sticker: mediaFileSchema
+    .extend({
+      is_animated: z.boolean().optional(),
+      is_video: z.boolean().optional(),
+    })
+    .optional(),
+  audio: mediaFileSchema.optional(),
+  voice: mediaFileSchema.optional(),
+  document: mediaFileSchema.optional(),
+  video: mediaFileSchema.optional(),
+  animation: mediaFileSchema.optional(),
+  video_note: mediaFileSchema.optional(),
   reply_to_message: z.object({ message_id: z.number().int() }).optional(),
   forum_topic_created: z.object({ name: z.string().optional() }).optional(),
   forum_topic_closed: z.object({}).optional(),
@@ -441,6 +464,10 @@ export class ChildRuntime {
       const api: TelegramApiPort = {
         call: (method, params) => this.adapterCall(method, params ?? {}),
         document: (file) => this.adapterFile(file),
+        download: (fileId) => {
+          if (!this.adapter) throw new Error("Telegram adapter unavailable");
+          return this.adapter.download(fileId);
+        },
         typing: (params) => {
           if (!this.adapter || typeof params.chat_id !== "number")
             return Promise.resolve();

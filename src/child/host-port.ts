@@ -267,6 +267,52 @@ export function createHostPort(options: HostPortOptions) {
         await call("newSessionSelection", source ? { source } : {}),
       );
     },
+    async receiveFile(id, file, requestId) {
+      if (file.content.length > 10 * 1024 * 1024)
+        throw new RangeError("Incoming file exceeds 10 MiB limit");
+      const scope = context(true);
+      const descriptor = parse(
+        z.object({ id: z.string().min(1) }),
+        await request("uploads.begin", {
+          ...scope,
+          sessionId: id,
+          name: file.name,
+          size: file.content.length,
+        }),
+      );
+      let committed = false;
+      try {
+        for (let offset = 0; offset < file.content.length; offset += 65536) {
+          signal?.throwIfAborted();
+          await request("uploads.chunk", {
+            ...scope,
+            uploadId: descriptor.id,
+            offset,
+            data: Buffer.from(
+              file.content.subarray(offset, offset + 65536),
+            ).toString("base64"),
+          });
+        }
+        const path = parse(
+          z.string().min(1),
+          await request("uploads.commit", {
+            ...scope,
+            uploadId: descriptor.id,
+            requestId,
+          }),
+        );
+        committed = true;
+        return path;
+      } finally {
+        // Commit consumes the handle; release is only needed on failed transfer.
+        if (!committed)
+          await request(
+            "uploads.release",
+            { ...scope, uploadId: descriptor.id },
+            false,
+          ).catch(() => {});
+      }
+    },
     async prompt(id, text, requestId) {
       return call("prompt", { id, text, requestId }, true);
     },

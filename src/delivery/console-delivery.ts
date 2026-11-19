@@ -34,7 +34,7 @@ const priorTurn = (candidate: TurnId, current: TurnId): boolean => {
 };
 // Telegram requires fallback text inside a custom-emoji entity.
 const EMPTY_MESSAGE_HTML =
-  '<tg-emoji emoji-id="5258121851091043775">⏳</tg-emoji>';
+  '<tg-emoji emoji-id="5294363352070367389">⏳</tg-emoji>';
 const hasText = (text: unknown): text is string =>
   typeof text === "string" && Boolean(text.trim());
 const logRows = (view: RunView, delivery: RunReceipt) =>

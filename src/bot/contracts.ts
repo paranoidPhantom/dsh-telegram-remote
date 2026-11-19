@@ -221,6 +221,7 @@ export interface TelegramParams extends MessageOptions {
 export interface TelegramApiPort {
   call(method: TelegramMethod, params?: TelegramParams): Promise<unknown>;
   document(file: ConsoleDocument): Promise<unknown>;
+  download?(fileId: string): Promise<Uint8Array>;
   typing?(params: TelegramParams): Promise<unknown>;
 }
 export interface ConsoleFile {
@@ -243,6 +244,11 @@ export interface ConsoleBridge {
   newSessionSelection(
     source?: SessionId,
   ): Promise<ModelSelection | null | undefined>;
+  receiveFile?(
+    id: SessionId,
+    file: ConsoleFile,
+    requestId: string,
+  ): Promise<string>;
   prompt(id: SessionId, text: string, requestId: string): Promise<unknown>;
   stop(id: SessionId): Promise<unknown>;
   details(id: SessionId): Promise<string>;
@@ -254,6 +260,7 @@ export interface ConsoleBridge {
   ): Promise<{ accepted: boolean; reason?: string }>;
 }
 export interface NativePrompt {
+  media?: { fileId: string; name: string };
   text: string;
   requestId: string;
 }
@@ -373,12 +380,27 @@ export interface TelegramChat {
   id: number;
   type: string;
 }
+export interface TelegramMediaFile {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
 export interface TelegramMessage {
   message_id: number;
   chat: TelegramChat;
   from?: { id: number };
   message_thread_id?: number;
   text?: string;
+  caption?: string;
+  photo?: (TelegramMediaFile & { width: number; height: number })[];
+  sticker?: TelegramMediaFile & { is_animated?: boolean; is_video?: boolean };
+  audio?: TelegramMediaFile;
+  voice?: TelegramMediaFile;
+  document?: TelegramMediaFile;
+  video?: TelegramMediaFile;
+  animation?: TelegramMediaFile;
+  video_note?: TelegramMediaFile;
   reply_to_message?: { message_id: number };
   forum_topic_created?: { name?: string };
   forum_topic_deleted?: object;
@@ -452,6 +474,7 @@ export interface SessionActionsPort extends MessagePort, QueuePort {
     | "metadata"
     | "models"
   >;
+  forwardPrompt(id: SessionId, prompt: NativePrompt): Promise<void>;
   readonly api: Pick<TelegramApiPort, "call">;
   readonly store: ConsoleStore;
   readonly closed: boolean;

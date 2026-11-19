@@ -202,7 +202,9 @@ test("READMEs cross-link all languages and retain the same minimal installation 
     const value = await readFile(new URL(name, root), "utf8");
     for (const link of ["README.md", "README.zh-CN.md", "README.ru.md"])
       assert.ok(value.includes(`](${link})`));
-    assert.equal((value.match(/^- /gm) || []).length, 11);
+    assert.equal((value.match(/^- /gm) || []).length, 12);
+    for (const token of [".dsh-telegram-remote/", "10", "UUID"])
+      assert.ok(value.includes(token));
     for (const section of ["/pulls", "/issues"])
       assert.ok(
         value.includes(

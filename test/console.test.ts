@@ -315,7 +315,7 @@ test("serialized streaming has immediate Stop, native draft, one answer and no r
   assert.equal(sends.length, 2);
   assert.equal(
     requiredField(sends[0]!.params.text),
-    '<tg-emoji emoji-id="5258121851091043775">⏳</tg-emoji>',
+    '<tg-emoji emoji-id="5294363352070367389">⏳</tg-emoji>',
   );
   assert.equal(sends[0]!.params.parse_mode, "HTML");
   assert.equal(f.token(sends[0], "Stop"), undefined);

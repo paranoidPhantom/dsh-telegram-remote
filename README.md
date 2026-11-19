@@ -19,6 +19,7 @@ Control DeepSeek Harness from a private Telegram bot, built around **Telegram th
 - **User questions:** answer blocking questions with single/multiple choices, explicit text replies, or Skip. Timed/late questions and specialized approval/plan reviews remain on existing Harness surfaces.
 - **Interactive approvals:** review the requested operation and approve or reject it with colored buttons.
 - **Session controls:** pinned session details, queue steering, and topic management. Ending a Telegram topic does not delete or stop its DSH session.
+- **Incoming media:** send images, stickers, audio/voice, videos or documents (up to 10 MiB each). Files are saved as UUID-named files in the session workspace’s `.dsh-telegram-remote/` directory; their `@path` and caption are forwarded to DSH. Reading/transcription depends on the model and available tools. Albums are handled as separate messages.
 - **File delivery:** receive supported photos, video, and audio natively, or download documents and files touched during a turn.
 - **Localized and efficient:** English, Chinese, and Russian UI; coalesced progress updates, independent topic scheduling, and rate-limit backoff.
 
