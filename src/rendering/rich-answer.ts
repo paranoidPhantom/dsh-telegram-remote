@@ -48,17 +48,113 @@ function destination(source: string): string {
   // Whitespace starts an optional Markdown title, not part of the address.
   return unescape(value.split(/\s/)[0] ?? "");
 }
+interface MathSpan {
+  end: number;
+  body: string;
+  display: boolean;
+}
+/** Only explicit math delimiters imply math; ordinary parentheses/brackets and
+ * currency remain prose. Escaped delimiters and code are handled by the caller. */
+interface MathBudget {
+  remaining: number;
+}
+function mathAt(
+  source: string,
+  start: number,
+  budget: MathBudget,
+): MathSpan | undefined {
+  const opener = source.startsWith("\\(", start)
+    ? "\\("
+    : source.startsWith("\\[", start)
+      ? "\\["
+      : source.startsWith("$$", start)
+        ? "$$"
+        : source[start] === "$" && !/\s/.test(source[start + 1] ?? " ")
+          ? "$"
+          : undefined;
+  if (!opener) return;
+  const closer = opener === "\\(" ? "\\)" : opener === "\\[" ? "\\]" : opener;
+  for (let index = start + opener.length; index < source.length; index++) {
+    if (--budget.remaining < 0) return;
+    if (source.startsWith(closer, index)) {
+      if (
+        closer === "$" &&
+        (source[index + 1] === "$" || /\s/.test(source[index - 1]!))
+      )
+        continue;
+      const body = source.slice(start + opener.length, index);
+      if (!body.trim() || (opener === "$" && body.includes("\n"))) return;
+      return {
+        end: index + closer.length,
+        body,
+        display: opener === "\\[" || opener === "$$",
+      };
+    }
+    if (source[index] === "\\") index++;
+  }
+  return;
+}
+/** Telegram's formula renderer rejects \\boxed. Drop only that presentation
+ * command before a braced argument; keep braces so scripts/fractions retain
+ * grouping. Tokenize TeX controls to avoid touching \\\\boxed or \\boxedName. */
+function compatibleLatex(source: string): string {
+  return source.replace(
+    /\\(?:[a-zA-Z]+|[^\r\n])/g,
+    (command, offset: number) =>
+      command === "\\boxed" &&
+      /^\s*\{/.test(source.slice(offset + command.length))
+        ? ""
+        : command,
+  );
+}
 type References = Map<string, string>;
 const refKey = (text: string) =>
   unescape(text).replace(/\s+/g, " ").trim().toLowerCase();
 
 /** Protect code spans before interpreting brackets; nested labels and destination
  * parentheses are balanced, escaped punctuation never becomes an active image. */
-function inline(source: string, references: References, depth = 0): string {
+function inline(
+  source: string,
+  references: References,
+  depth = 0,
+  mathBudget: MathBudget = { remaining: source.length * 8 + 1024 },
+): string {
   if (depth > 8) return code(unescape(source));
   let result = "";
   for (let index = 0; index < source.length;) {
     const character = source[index]!;
+    const math = mathAt(source, index, mathBudget);
+    if (math) {
+      const delimiter = math.display ? "$$" : "$";
+      // A dollar/backtick/HTML collision could terminate native math early and
+      // expose unchecked links/media. Preserve uncertain formulas as inert code.
+      if (math.body.includes("$") || /[`<>]/.test(math.body)) {
+        result += code(source.slice(index, math.end));
+        index = math.end;
+        continue;
+      }
+      // Formula source is raw LaTeX, not Markdown; retain ampersands for aligned
+      // environments instead of HTML-encoding them. Never parse links inside it.
+      const before =
+        math.display &&
+        /\S/.test(source.slice(0, index).split("\n").pop() ?? "")
+          ? "\n\n"
+          : "";
+      const after =
+        math.display && /\S/.test(source.slice(math.end).split("\n")[0] ?? "")
+          ? "\n\n"
+          : "";
+      result +=
+        before +
+        delimiter +
+        compatibleLatex(
+          math.display ? math.body : math.body.replace(/\r?\n/g, " "),
+        ) +
+        delimiter +
+        after;
+      index = math.end;
+      continue;
+    }
     if (character === "\\" && index + 1 < source.length) {
       const next = source[index + 1]!;
       result += /[<>&]/.test(next) ? html(next) : `\\${next}`;
@@ -181,6 +277,7 @@ export function richAnswerParts(input: unknown, max = 16000): RichAnswerPart[] {
     throw new RangeError("Rich answer budget must be at least 256 bytes");
   const source = String(input ?? "").toWellFormed();
   const lines = source.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const mathBudget: MathBudget = { remaining: source.length * 8 + 1024 };
   const references: References = new Map();
   for (const line of lines) {
     const definition = line.match(/^ {0,3}\[([^\]^]+)\]:\s*(.+)/);
@@ -281,6 +378,46 @@ export function richAnswerParts(input: unknown, max = 16000): RichAnswerPart[] {
         index = close;
       }
     }
+    // Pull complete multi-line formulas into one budgeted unit. Do not pull
+    // across a code fence or treat delimiters inside code spans as math.
+    for (let position = 0; position < line.length; position++) {
+      if (line[position] === "`") {
+        const ticks = line.slice(position).match(/^`+/)![0];
+        let end = line.indexOf(ticks, position + ticks.length);
+        while (
+          end >= 0 &&
+          (line[end - 1] === "`" || line[end + ticks.length] === "`")
+        )
+          end = line.indexOf(ticks, end + ticks.length);
+        if (end < 0) break;
+        position = end + ticks.length - 1;
+        continue;
+      }
+      const math = mathAt(line, position, mathBudget);
+      if (math) {
+        position = math.end - 1;
+        continue;
+      }
+      if (mathBudget.remaining <= 0) break;
+      if (
+        line.startsWith("\\(", position) ||
+        line.startsWith("\\[", position) ||
+        line.startsWith("$$", position)
+      ) {
+        let candidate = line;
+        for (let next = index + 1; next < lines.length; next++) {
+          if (/^ {0,3}(?:`{3,}|~{3,})/.test(lines[next]!)) break;
+          candidate += lines[next]!;
+          if (mathAt(candidate, position, mathBudget)) {
+            line = candidate;
+            index = next;
+            break;
+          }
+          if (bytes(candidate) > limit) break;
+        }
+      }
+      if (line[position] === "\\") position++;
+    }
     const prefix = line.match(/^ {0,3}(?:>[ \t]?)+/)?.[0] ?? "";
     const nesting =
       (prefix.match(/>/g) ?? []).length +
@@ -296,8 +433,12 @@ export function richAnswerParts(input: unknown, max = 16000): RichAnswerPart[] {
       literal(line.replace(/\n$/, ""));
       continue;
     }
-    const value = prefix + inline(line.slice(prefix.length), references);
-    const cost = 1 + (line.match(/>|\||(?:^|\s)[*+-] |\d+\. /g) ?? []).length;
+    const value =
+      prefix + inline(line.slice(prefix.length), references, 0, mathBudget);
+    const cost =
+      (line.match(/\n/g)?.length ?? 0) +
+      1 +
+      (line.match(/>|\||(?:^|\s)[*+-] |\d+\. /g) ?? []).length;
     if (bytes(value) > limit || cost > 250) literal(line.replace(/\n$/, ""));
     else add(value, cost);
   }

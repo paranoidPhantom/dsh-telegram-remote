@@ -29,6 +29,40 @@ test("unsupported drafts edit rich content in the same placeholder", async (t) =
   assert.equal(edit?.params.rich_message?.markdown, markdown);
   assert.equal(edit?.params.message_id, f.record("console:run:s:1").messageId);
 });
+test("LaTeX normalizes in native drafts, fallback edits and final sends", async (t) => {
+  const source = String.raw`Inline: \(E(\xi)=3.3\)
+
+\[
+\rho=\frac{0.24}{\sqrt{6.21}\cdot1.1}\approx\boxed{0.0876}
+\]`;
+  const expected = String.raw`Inline: $E(\xi)=3.3$
+
+$$
+\rho=\frac{0.24}{\sqrt{6.21}\cdot1.1}\approx{0.0876}
+$$`;
+  for (const fallback of [false, true]) {
+    const f = deliveryFixture(t);
+    f.console.draftsUnsupported = fallback;
+    await f.console.onRun("s", { turn: 1, partialAnswer: source });
+    const preview = f.calls.find(
+      (c) =>
+        c.method === (fallback ? "editMessageText" : "sendRichMessageDraft") &&
+        c.params.rich_message,
+    );
+    assert.equal(preview?.params.rich_message?.markdown, expected);
+    await f.console.onRun("s", {
+      turn: 1,
+      outputs: [{ id: "math", text: source }],
+      final: true,
+    });
+    assert.equal(
+      f.calls.find((c) => c.method === "sendRichMessage")?.params.rich_message
+        ?.markdown,
+      expected,
+    );
+  }
+});
+
 test("legacy accepted output chunks never switch representation on recovery", async (t) => {
   const f = deliveryFixture(t);
   f.data.set("console:run:s:1", {

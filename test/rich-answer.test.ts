@@ -11,6 +11,116 @@ test("native rich Markdown headings, lists, tasks, tables, quotes and formulas s
     "# Heading\n## Section\n### Three\n#### Four\n##### Five\n###### Six\n\n**bold** _italic_ ~~strike~~ ==marked== ||spoiler||\n\n- one\n- [ ] todo\n- [x] done\n1. ordered\n\n> Quote\n> Continued\n\n| A | B |\n|---|---|\n| x | y |\n\n$x^2$\n\n$$E=mc^2$$\n\nref[^note]\n\n[^note]: _footnote_\n";
   assert.equal(rich(source), source);
 });
+test("LaTeX delimiters normalize to Telegram inline and display math", () => {
+  assert.equal(
+    rich(String.raw`Inline LaTeX: \(E(\xi)=3.3\)`),
+    String.raw`Inline LaTeX: $E(\xi)=3.3$`,
+  );
+  assert.equal(
+    rich(
+      String.raw`Display LaTeX: \[ \rho=\frac{0.24}{\sqrt{6.21}\cdot1.1}\approx0.0876 \]`,
+    ),
+    "Display LaTeX: \n\n" +
+      String.raw`$$ \rho=\frac{0.24}{\sqrt{6.21}\cdot1.1}\approx0.0876 $$`,
+  );
+});
+test("boxed presentation falls back to grouped contents in exact reported formula", () => {
+  const source = String.raw`Условное математическое ожидание:
+\[
+E(\eta\mid\xi=0)
+=(-1)\cdot\frac16+0\cdot\frac13
++1\cdot\frac13+2\cdot\frac16
+=\boxed{\frac12}.
+\]`;
+  assert.equal(
+    rich(source),
+    source
+      .replace("\\[", () => "$$")
+      .replace("\\]", () => "$$")
+      .replace("\\boxed", ""),
+  );
+  assert.equal(
+    rich(String.raw`\(x^{\boxed{a_{1}+\boxed{b}}}\)`),
+    String.raw`$x^{{a_{1}+{b}}}$`,
+  );
+  assert.equal(
+    rich(String.raw`$\boxed {x}+\boxedName{y}+\\boxed{z}$`),
+    String.raw`$ {x}+\boxedName{y}+\\boxed{z}$`,
+  );
+  assert.equal(
+    rich("`" + String.raw`\boxed{x}` + "`"),
+    "`" + String.raw`\boxed{x}` + "`",
+  );
+  assert.ok(
+    rich("```tex\n" + String.raw`\boxed{x}` + "\n```").includes(
+      String.raw`\boxed{x}`,
+    ),
+  );
+});
+test("multiline math remains atomic across message boundaries", () => {
+  const formula = String.raw`\[
+\begin{aligned}
+a_1 &= \frac{1}{2} \\
+b_2 &= 3
+\end{aligned}
+\]`;
+  const parts = richAnswerParts(
+    "prefix\n".repeat(30) + formula + "\nsuffix",
+    256,
+  );
+  const math = parts.filter((p) => p.markdown.includes("begin{aligned}"));
+  assert.equal(math.length, 1);
+  assert.ok(math[0]!.markdown.includes("$$\n"));
+  assert.ok(math[0]!.markdown.includes("\\end{aligned}\n$$"));
+  assert.ok(parts.every((p) => Buffer.byteLength(p.markdown) <= 256));
+});
+test("math source is opaque to Markdown but cannot inject raw HTML", () => {
+  const source = String.raw`\(x_1 + \text{![x](tg://user?id=1)} < y & z\)`;
+  assert.equal(rich(source), "` " + source + " `");
+  assert.equal(
+    rich(String.raw`$x_1 + \frac{1}{2}$`),
+    String.raw`$x_1 + \frac{1}{2}$`,
+  );
+});
+test("delimiter collisions stay inert and raw alignment ampersands survive", () => {
+  for (const source of [
+    String.raw`\(x$ ![x](tg://user?id=1) $y\)`,
+    String.raw`\[x$$ ![x](tg://photo?id=1) $$y\]`,
+  ])
+    assert.equal(rich(source), "` " + source + " `");
+  assert.equal(rich(String.raw`\[a &= b\]`), String.raw`$$a &= b$$`);
+  assert.equal(rich("\\(a\nb\\)"), "$a b$");
+});
+test("repeated unmatched math openers stay bounded and preserve input", () => {
+  const source = "\\(".repeat(16000);
+  const parts = richAnswerParts(source);
+  assert.ok(parts.every((p) => Buffer.byteLength(p.markdown) <= 16000));
+  assert.ok(parts.length > 1);
+});
+test("code, escaped delimiters, ordinary brackets and incomplete math remain untouched", () => {
+  for (const source of [
+    String.raw`(E(\xi)=3.3)`,
+    String.raw`[ x + y ]`,
+    String.raw`\(unfinished`,
+    String.raw`\\(not math\\)`,
+    String.raw`\$5 and \$10`,
+  ])
+    assert.equal(rich(source), source);
+  const code = "`" + String.raw`\(x_1\) \[y\]` + "`";
+  assert.equal(rich(code), code);
+  const fenced = "```tex\n" + String.raw`\(x_1\) \[y\]` + "\n```";
+  assert.ok(rich(fenced).includes(String.raw`\(x_1\) \[y\]`));
+});
+test("oversized formulas fall back to literal code without oversized chunks", () => {
+  const parts = richAnswerParts(
+    String.raw`\[` + "x+".repeat(1000) + String.raw`\]`,
+    256,
+  );
+  assert.ok(parts.length > 1);
+  assert.ok(parts.every((p) => Buffer.byteLength(p.markdown) <= 256));
+  assert.ok(parts.every((p) => /^```|^~~~/.test(p.markdown)));
+});
+
 test("raw HTML cannot inject rich authority buttons, media or encoded HTML", () => {
   const value = rich(
     '<buttons><button callback_data="approve">Yes</button></buttons>\n<img src="https://private/image"> &lt;button&gt;',
